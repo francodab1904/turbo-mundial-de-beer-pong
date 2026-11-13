@@ -186,7 +186,7 @@ function standings(gi){
   return { rows: rk.rows, pend: rk.pend, done: played===6 };
 }
 // Desempate: 1) puntos · 2) si empatan 2, el partido entre ellos · 3) si empatan 3 o más, tiro de desempate en la mesa
-function rank(rows, key, h2h){
+function rank(rows, key, h2h, auto){
   rows.sort((x,y)=> (y.pts-x.pts) || (S.tb[y.id]-S.tb[x.id]));
   const out = [], pend = [];
   let i = 0;
@@ -196,7 +196,7 @@ function rank(rows, key, h2h){
     if (cl.length === 2 && h2h){
       const w = S.r[pkey(cl[0].id, cl[1].id)];
       if (w === cl[1].id) cl = [cl[1], cl[0]];
-    } else if (cl.length >= 2){
+    } else if (cl.length >= 2 && !auto){
       const dk = key + ":" + cl[0].pts, ids = cl.map(x=>x.id), ord = (S.d||{})[dk];
       if (Array.isArray(ord) && ord.length === ids.length && ord.every(x=>ids.includes(x))) cl = ord.map(id=>cl.find(x=>x.id===id));
       else pend.push({ dk, ids, pts: cl[0].pts, partial: Array.isArray(ord) ? ord.filter(x=>ids.includes(x)) : [] });
@@ -206,7 +206,7 @@ function rank(rows, key, h2h){
   return { rows: out, pend };
 }
 const allDone = () => !!S.g && [0,1,2].every(gi=>standings(gi).done);
-function thirdsRank(){ return rank([0,1,2].map(gi=>standings(gi).rows[2]), "t", false); }
+function thirdsRank(){ return rank([0,1,2].map(gi=>standings(gi).rows[2]), "t", false, true); }   // terceros: si empatan, sorteo
 function thirds(){ return thirdsRank().rows; }
 const tiesReady = () => allDone() && [0,1,2].every(gi=>standings(gi).pend.length===0) && thirdsRank().pend.length===0;
 
@@ -303,7 +303,7 @@ function vGrupos(){
           <tr class="${i<2?"z-oro":"z-plata"}"><td class="pos">${i+1}</td><td class="tn">${esc(tname(r.id))}</td><td>${LETTERS[r.gi]}</td><td class="pts">${r.pts}</td></tr>`).join("")}
       </table>
       ${thr ? thr.pend.map(p=>pendBox(p, true)).join("") : ""}
-      <div class="hint">Los 2 mejores terceros pasan a cuartos. El peor tercero queda afuera. Si empatan en puntos, tiro de desempate en la mesa.</div>
+      <div class="hint">Los 2 mejores terceros pasan a cuartos. El peor tercero queda afuera. Si empatan en puntos, se define por sorteo 🎲.</div>
     </div>
   </div>
   <div class="legend">
@@ -376,7 +376,7 @@ function vReglas(){
       <p>• Partido ganado = <b>1 punto</b>. Partido perdido = <b>0 puntos</b>.</p>
       <p>• Si empatan en puntos: <b>1)</b> más puntos; <b>2)</b> si empatan 2 equipos, pasa el que <span class="y">ganó el partido entre ellos</span>; <b>3)</b> si empatan 3 o más, <span class="y">tiro de desempate en la mesa</span>.</p>
       <p>• Tiro de desempate: tira un jugador de cada equipo por turno. El que erra cuando el otro mete, queda abajo.</p>
-      <p>• Mejores terceros: se comparan por puntos. Si empatan, tiro de desempate en la mesa.</p></div>
+      <p>• Mejores terceros: se comparan por puntos. Si empatan, se define por <span class="y">sorteo</span>.</p></div>
     <div class="card"><h4>Bebidas y equipos</h4>
       <p>• Se juega con 2 cervezas con alcohol por equipo.</p>
       <p>• Una pelota por jugador (equipo de 3, tres pelotas por mesa).</p></div>
