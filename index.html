@@ -4,10 +4,10 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Turbo Mundial de Beer Pong</title>
-<meta name="description" content="Messi Cup · Champions League. 12 equipos, 3 grupos, Copa de Oro y Copa de Plata. Ganen o mueran.">
+<meta name="description" content="Messi Cup · Champions League. 12 equipos, 3 grupos, cuartos, semis y final. Ganen o mueran.">
 <meta property="og:type" content="website">
 <meta property="og:title" content="🍺🏆 Turbo Mundial de Beer Pong">
-<meta property="og:description" content="Messi Cup · Champions League. 12 equipos, 3 grupos, Copa de Oro y Copa de Plata.">
+<meta property="og:description" content="Messi Cup · Champions League. 12 equipos, 3 grupos, cuartos, semis y final.">
 <meta property="og:image" content="https://francodab1904.github.io/turbo-mundial-de-beer-pong/preview.png">
 <meta property="og:image:width" content="1200">
 <meta property="og:image:height" content="630">
@@ -217,18 +217,13 @@ function qualified(){
 const QLBL = { q1:["1° A","Mejor 3° (B o C)"], q2:["2° B","2° C"], q3:["1° B","Mejor 3° (A o C)"], q4:["1° C","2° A"] };
 const KO = {
   q1:{lbl:"Cuartos 1"}, q2:{lbl:"Cuartos 2"}, q3:{lbl:"Cuartos 3"}, q4:{lbl:"Cuartos 4"},
-  s1:{lbl:"Semi 1", from:["q1","q2"]}, s2:{lbl:"Semi 2", from:["q3","q4"]}, f:{lbl:"Final de Oro", from:["s1","s2"]},
-  p1:{lbl:"Semi 1 Plata"}, p2:{lbl:"Semi 2 Plata"}, pf:{lbl:"Final de Plata", from:["p1","p2"]}
+  s1:{lbl:"Semi 1", from:["q1","q2"]}, s2:{lbl:"Semi 2", from:["q3","q4"]}, f:{lbl:"Final de Oro", from:["s1","s2"]}
 };
 function sides(m){
   const Q = qualified();
   if (m[0]==="q"){
     if (!Q) return QLBL[m].map(l=>({id:null,label:l}));
     return Q[m].map(id=>({id}));
-  }
-  if (m==="p1" || m==="p2"){
-    if (!Q) return [{id:null,label:"Se define en grupos"},{id:null,label:"Se define en grupos"}];
-    const p = Q.plata; return m==="p1" ? [{id:p[0]},{id:p[3]}] : [{id:p[1]},{id:p[2]}];
   }
   return KO[m].from.map(x=>({id:winner(x), label:"Ganador " + KO[x].lbl}));
 }
@@ -282,13 +277,13 @@ function vGrupos(){
         ${(th || [0,1,2].map(gi=>standings(gi).rows[2]).sort((x,y)=>(y.pts-x.pts)||(S.tb[y.id]-S.tb[x.id]))).map((r,i)=>`
           <tr class="${i<2?"z-oro":"z-plata"}"><td class="pos">${i+1}</td><td class="tn">${esc(tname(r.id))}</td><td>${LETTERS[r.gi]}</td><td class="pts">${r.pts}</td></tr>`).join("")}
       </table>
-      <div class="hint">Los 2 mejores terceros pasan a cuartos de la Copa de Oro. El peor tercero va a la Copa de Plata.</div>
+      <div class="hint">Los 2 mejores terceros pasan a cuartos. El peor tercero queda afuera.</div>
     </div>
   </div>
   <div class="legend">
-    <span><i style="background:var(--green)"></i>Cuartos de la Copa de Oro</span>
+    <span><i style="background:var(--green)"></i>Pasan a cuartos</span>
     <span><i style="background:var(--amber)"></i>Depende de la tabla de terceros</span>
-    <span><i style="background:var(--silver)"></i>Copa de Plata</span>
+    <span><i style="background:var(--silver)"></i>Quedan afuera</span>
     <span>PJ jugados · PG ganados · PP perdidos · Pts 1 por victoria</span>
   </div>`;
 }
@@ -313,16 +308,10 @@ function vLlaves(){
   const col = (h, ms) => `<div class="col"><h3>${h}</h3><div class="ties">${ms.map(tie).join("")}</div></div>`;
   return `
   ${RO() ? "" : `<div class="bar"><span class="hint">Las llaves se completan solas cuando terminan los 3 grupos. Tocá al que ganó y pasa; tocá de nuevo para deshacer.</span></div>`}
-  <div class="sect oro">🏆 Copa de Oro</div>
+  <div class="sect oro">🏆 Eliminación</div>
   <div class="bracket">
     ${col("Cuartos",["q1","q2","q3","q4"])}${col("Semis",["s1","s2"])}${col("Final",["f"])}
     <div class="col"><h3>Campeón</h3><div class="ties">${champ("f")}</div></div>
-  </div>
-  <div class="sect pl" style="margin-top:26px">🥈 Copa de Plata</div>
-  <div class="hint" style="margin-bottom:10px">La juegan el peor tercero y los 3 cuartos de grupo.</div>
-  <div class="bracket plata">
-    ${col("Semis",["p1","p2"])}${col("Final",["pf"])}
-    <div class="col"><h3>Campeón</h3><div class="ties">${champ("pf", true)}</div></div>
   </div>
   ${RO() ? "" : `<div class="bar" style="margin-top:28px"><button class="btn ghost" data-act="reset">Reiniciar torneo</button></div>`}`;
 }
@@ -355,7 +344,7 @@ function vReglas(){
     <div class="card"><h4>Formato</h4>
       <p>• 12 equipos en 3 grupos de 4. Todos contra todos en el grupo: <b>3 partidos cada uno</b>.</p>
       <p>• Ganar = <b>1 punto</b>, perder = 0. Si hay empate en puntos, se define por <span class="y">sorteo</span>.</p>
-      <p>• Pasan a cuartos de la <span class="y">Copa de Oro</span> los 2 primeros de cada grupo y los 2 mejores terceros. El resto juega la <b>Copa de Plata</b>.</p></div>
+      <p>• Pasan a <span class="y">cuartos</span> los 2 primeros de cada grupo y los 2 mejores terceros. Después semis y final.</p></div>
     <div class="card"><h4>Bebidas y equipos</h4>
       <p>• Se juega con 2 cervezas con alcohol por equipo.</p>
       <p>• Una pelota por jugador (equipo de 3, tres pelotas por mesa).</p></div>
