@@ -157,7 +157,7 @@ const RO = () => !isAdmin;
 function randTb(){ return Array.from({length:N}, ()=>Math.random()); }
 function fresh(){
   return { names: Array(N).fill(""), players: [...DEFAULT_TEAMS], gn: ["Grupo A","Grupo B","Grupo C"],
-           g: null, r: {}, k: {}, tb: randTb() };
+           g: null, r: {}, k: {}, d: {}, tb: randTb() };
 }
 let S = fresh();
 if (isAdmin){ try { const s = JSON.parse(localStorage.getItem(KEY)); if (s && s.players) S = Object.assign(fresh(), s); } catch(e){} }
@@ -182,24 +182,37 @@ function standings(gi){
     const W = by[w], L = by[w===a?b:a];
     W.pj++; L.pj++; W.pg++; W.pts++; L.pp++;
   }
-  rows.sort((x,y)=> (y.pts-x.pts) || (S.tb[y.id]-S.tb[x.id]));
-  return { rows, done: played===6 };
+  const rk = rank(rows, "g"+gi, true);
+  return { rows: rk.rows, pend: rk.pend, done: played===6 };
 }
-function tiedNote(rows){
-  const seen = {}; let tie = false;
-  rows.forEach(r=>{ if (seen[r.pts]) tie = true; seen[r.pts] = 1; });
-  return tie;
+// Desempate: 1) puntos · 2) si empatan 2, el partido entre ellos · 3) si empatan 3 o más, tiro de desempate en la mesa
+function rank(rows, key, h2h){
+  rows.sort((x,y)=> (y.pts-x.pts) || (S.tb[y.id]-S.tb[x.id]));
+  const out = [], pend = [];
+  let i = 0;
+  while (i < rows.length){
+    let j = i; while (j < rows.length && rows[j].pts === rows[i].pts) j++;
+    let cl = rows.slice(i, j);
+    if (cl.length === 2 && h2h){
+      const w = S.r[pkey(cl[0].id, cl[1].id)];
+      if (w === cl[1].id) cl = [cl[1], cl[0]];
+    } else if (cl.length >= 2){
+      const dk = key + ":" + cl[0].pts, ids = cl.map(x=>x.id), ord = (S.d||{})[dk];
+      if (Array.isArray(ord) && ord.length === ids.length && ord.every(x=>ids.includes(x))) cl = ord.map(id=>cl.find(x=>x.id===id));
+      else pend.push({ dk, ids, pts: cl[0].pts, partial: Array.isArray(ord) ? ord.filter(x=>ids.includes(x)) : [] });
+    }
+    out.push(...cl); i = j;
+  }
+  return { rows: out, pend };
 }
 const allDone = () => !!S.g && [0,1,2].every(gi=>standings(gi).done);
-function thirds(){
-  const t = [0,1,2].map(gi=>standings(gi).rows[2]);
-  t.sort((x,y)=> (y.pts-x.pts) || (S.tb[y.id]-S.tb[x.id]));
-  return t;
-}
+function thirdsRank(){ return rank([0,1,2].map(gi=>standings(gi).rows[2]), "t", false); }
+function thirds(){ return thirdsRank().rows; }
+const tiesReady = () => allDone() && [0,1,2].every(gi=>standings(gi).pend.length===0) && thirdsRank().pend.length===0;
 
 // ===== llaves =====
 function qualified(){
-  if (!allDone()) return null;
+  if (!tiesReady()) return null;
   const st = [0,1,2].map(gi=>standings(gi).rows);
   const th = thirds(), best = th.slice(0,2), worst = th[2];
   const bestG = best.map(r=>r.gi).sort().join("");
@@ -240,11 +253,23 @@ function render(){
   app.innerHTML = view==="llaves" ? vLlaves() : view==="equipos" ? vEquipos() : view==="reglas" ? vReglas() : vGrupos();
 }
 
+function pendBox(p, show){
+  if (!show) return "";
+  const n = p.ids.length;
+  if (RO()) return `<div class="card" style="border-color:var(--amber);margin:4px 0 12px;padding:10px 12px"><b style="color:var(--amber)">🎯 Desempate en la mesa</b><div class="hint">Empate de ${n} equipos con ${p.pts} ${p.pts===1?"punto":"puntos"}. Se define con un tiro de desempate.</div></div>`;
+  return `<div class="card" style="border-color:var(--amber);margin:4px 0 12px;padding:10px 12px">
+    <b style="color:var(--amber)">🎯 Desempate en la mesa</b>
+    <div class="hint" style="margin:2px 0 8px">Empate de ${n} equipos con ${p.pts} ${p.pts===1?"punto":"puntos"}. Tocá en orden quién quedó 1°, 2°${n>2?", 3°":""}.</div>
+    <div style="display:flex;gap:6px;flex-wrap:wrap">${p.ids.map(id=>{ const k = p.partial.indexOf(id);
+      return `<div class="tm click ${k>=0?"win":""}" data-dk="${p.dk}" data-id="${id}">${k>=0?(k+1)+"° · ":""}${esc(tname(id))}</div>`; }).join("")}
+      ${p.partial.length ? `<button class="btn ghost" data-dkr="${p.dk}" style="padding:8px 12px">Borrar</button>` : ""}</div>
+  </div>`;
+}
 function vGrupos(){
   if (!S.g) return `<div class="empty">Todavía no se armaron los grupos.<br><br>${RO() ? "Cuando se sorteen, aparecen acá solos. 🍺" : `<button class="btn" data-act="sorteo">🎲 Sortear grupos</button><br><br><span class="hint">O armalos a mano en la pestaña Equipos.</span>`}</div>`;
-  const th = allDone() ? thirds() : null;
+  const thr = allDone() ? thirdsRank() : null, th = thr ? thr.rows : null;
   return `
-  ${RO() ? "" : `<div class="bar"><span class="hint">Tocá al equipo que ganó cada partido (1 punto). Tocá de nuevo para deshacer. Si hay empate en puntos, el orden se define por sorteo.</span></div>`}
+  ${RO() ? "" : `<div class="bar"><span class="hint">Tocá al equipo que ganó cada partido (1 punto). Tocá de nuevo para deshacer. Si al terminar un grupo empatan 3 equipos, te aparece el desempate para cargar.</span></div>`}
   <div class="groups">
   ${[0,1,2].map(gi=>{
     const ids = groupIds(gi), st = standings(gi);
@@ -257,7 +282,7 @@ function vGrupos(){
           return `<tr class="${z}"><td class="pos">${i+1}</td><td class="tn" title="${esc(S.players[r.id])}">${esc(tname(r.id))}</td><td>${r.pj}</td><td>${r.pg}</td><td>${r.pp}</td><td class="pts">${r.pts}</td></tr>`;
         }).join("")}
       </table>
-      ${tiedNote(st.rows) ? `<div class="hint" style="margin:-6px 0 8px">🎲 Hay empate en puntos: el orden entre ellos sale del sorteo.</div>` : ""}
+      ${st.pend.map(p=>pendBox(p, st.done)).join("")}
       ${FECHAS.map((f,fi)=>`<div class="fecha">Fecha ${fi+1}</div>` + f.map(([i,j])=>{
         const a = ids[i], b = ids[j], w = S.r[pkey(a,b)];
         const cl = id => (w===a||w===b) ? (w===id ? "win" : "lose") : "";
@@ -271,13 +296,14 @@ function vGrupos(){
     </div>`;
   }).join("")}
     <div class="card">
-      <div class="gtitle">Mejores terceros <small>${th ? "✅ definido" : "se define al final"}</small></div>
+      <div class="gtitle">Mejores terceros <small>${tiesReady() ? "✅ definido" : th ? "falta desempate" : "se define al final"}</small></div>
       <table class="tbl"><colgroup><col style="width:30px"><col><col style="width:44px"><col style="width:40px"></colgroup>
         <tr><th>#</th><th class="tn">Equipo</th><th>Grupo</th><th>Pts</th></tr>
-        ${(th || [0,1,2].map(gi=>standings(gi).rows[2]).sort((x,y)=>(y.pts-x.pts)||(S.tb[y.id]-S.tb[x.id]))).map((r,i)=>`
+        ${(th || thirdsRank().rows).map((r,i)=>`
           <tr class="${i<2?"z-oro":"z-plata"}"><td class="pos">${i+1}</td><td class="tn">${esc(tname(r.id))}</td><td>${LETTERS[r.gi]}</td><td class="pts">${r.pts}</td></tr>`).join("")}
       </table>
-      <div class="hint">Los 2 mejores terceros pasan a cuartos. El peor tercero queda afuera.</div>
+      ${thr ? thr.pend.map(p=>pendBox(p, true)).join("") : ""}
+      <div class="hint">Los 2 mejores terceros pasan a cuartos. El peor tercero queda afuera. Si empatan en puntos, tiro de desempate en la mesa.</div>
     </div>
   </div>
   <div class="legend">
@@ -308,6 +334,7 @@ function vLlaves(){
   const col = (h, ms) => `<div class="col"><h3>${h}</h3><div class="ties">${ms.map(tie).join("")}</div></div>`;
   return `
   ${RO() ? "" : `<div class="bar"><span class="hint">Las llaves se completan solas cuando terminan los 3 grupos. Tocá al que ganó y pasa; tocá de nuevo para deshacer.</span></div>`}
+  ${allDone() && !tiesReady() ? `<div class="card" style="border-color:var(--amber);margin-bottom:14px">🎯 Falta cargar un desempate en la pestaña Grupos para armar los cuartos.</div>` : ""}
   <div class="sect oro">🏆 Eliminación</div>
   <div class="bracket">
     ${col("Cuartos",["q1","q2","q3","q4"])}${col("Semis",["s1","s2"])}${col("Final",["f"])}
@@ -343,8 +370,13 @@ function vReglas(){
   return `<div class="rules">
     <div class="card"><h4>Formato</h4>
       <p>• 12 equipos en 3 grupos de 4. Todos contra todos en el grupo: <b>3 partidos cada uno</b>.</p>
-      <p>• Ganar = <b>1 punto</b>, perder = 0. Si hay empate en puntos, se define por <span class="y">sorteo</span>.</p>
-      <p>• Pasan a <span class="y">cuartos</span> los 2 primeros de cada grupo y los 2 mejores terceros. Después semis y final.</p></div>
+      <p>• Pasan a <span class="y">cuartos</span> los 2 primeros de cada grupo y los 2 mejores terceros. Después semis y final.</p>
+    </div>
+    <div class="card"><h4>Puntos y desempate</h4>
+      <p>• Partido ganado = <b>1 punto</b>. Partido perdido = <b>0 puntos</b>.</p>
+      <p>• Si empatan en puntos: <b>1)</b> más puntos; <b>2)</b> si empatan 2 equipos, pasa el que <span class="y">ganó el partido entre ellos</span>; <b>3)</b> si empatan 3 o más, <span class="y">tiro de desempate en la mesa</span>.</p>
+      <p>• Tiro de desempate: tira un jugador de cada equipo por turno. El que erra cuando el otro mete, queda abajo.</p>
+      <p>• Mejores terceros: se comparan por puntos. Si empatan, tiro de desempate en la mesa.</p></div>
     <div class="card"><h4>Bebidas y equipos</h4>
       <p>• Se juega con 2 cervezas con alcohol por equipo.</p>
       <p>• Una pelota por jugador (equipo de 3, tres pelotas por mesa).</p></div>
@@ -375,7 +407,7 @@ function save(){
   try { localStorage.setItem(KEY, JSON.stringify(S)); } catch(e){}
   if (LIVE){ clearTimeout(pubTimer); pubTimer = setTimeout(publish, 400); }
 }
-function pack(){ return JSON.stringify({v:3, t:Date.now(), n:S.names, p:S.players, gn:S.gn, g:S.g, r:S.r, k:S.k, tb:S.tb}); }
+function pack(){ return JSON.stringify({v:3, t:Date.now(), n:S.names, p:S.players, gn:S.gn, g:S.g, r:S.r, k:S.k, d:S.d, tb:S.tb}); }
 function unpack(str){
   let d; try { d = JSON.parse(str); } catch(e){ return null; }
   if (!d || d.v!==3 || typeof d.t!=="number") return null;
@@ -386,11 +418,13 @@ function unpack(str){
   const r = {}, k = {};
   if (d.r && typeof d.r==="object") for (const [key,val] of Object.entries(d.r)) if (/^\d{1,2}-\d{1,2}$/.test(key) && okId(val)) r[key]=val;
   if (d.k && typeof d.k==="object") for (const [key,val] of Object.entries(d.k)) if (KO[key] && okId(val)) k[key]=val;
-  return { t:d.t, names:d.n, players:d.p, gn:d.gn, g:d.g, r, k, tb:d.tb };
+  const dd = {};
+  if (d.d && typeof d.d==="object") for (const [key,val] of Object.entries(d.d)) if (/^(g[0-2]|t):\d$/.test(key) && Array.isArray(val) && val.length<=4 && val.every(okId) && new Set(val).size===val.length) dd[key]=val;
+  return { t:d.t, names:d.n, players:d.p, gn:d.gn, g:d.g, r, k, d:dd, tb:d.tb };
 }
 function apply(d){
   lastT = d.t;
-  S = { names:d.names, players:d.players, gn:d.gn, g:d.g, r:d.r, k:d.k, tb:d.tb };
+  S = { names:d.names, players:d.players, gn:d.gn, g:d.g, r:d.r, k:d.k, d:d.d, tb:d.tb };
   liveState = "Última actualización: " + hhmm(d.t);
   banner(); render();
 }
@@ -444,7 +478,7 @@ function confirmBox(msg, ok){
 function doSorteo(){
   const ids = Array.from({length:N},(_,i)=>i);
   for (let i=N-1;i>0;i--){ const j=Math.floor(Math.random()*(i+1)); [ids[i],ids[j]]=[ids[j],ids[i]]; }
-  S.g = ids; S.r = {}; S.k = {}; S.tb = randTb();
+  S.g = ids; S.r = {}; S.k = {}; S.d = {}; S.tb = randTb();
   save(); go("grupos");
 }
 function go(v){ view = v; try{ history.replaceState(null,"","#"+v); }catch(e){} render(); window.scrollTo(0,0); }
@@ -458,9 +492,13 @@ document.getElementById("app").addEventListener("click", e=>{
   const a = e.target.closest("[data-act]");
   if (a){
     if (a.dataset.act==="sorteo"){ if (S.g && hasResults()) confirmBox("Re-sortear borra todos los resultados. ¿Seguro?", doSorteo); else doSorteo(); }
-    if (a.dataset.act==="reset") confirmBox("Esto borra grupos y resultados (nombres y jugadores quedan). ¿Seguro?", ()=>{ S.g=null; S.r={}; S.k={}; save(); go("equipos"); });
+    if (a.dataset.act==="reset") confirmBox("Esto borra grupos y resultados (nombres y jugadores quedan). ¿Seguro?", ()=>{ S.g=null; S.r={}; S.k={}; S.d={}; save(); go("equipos"); });
     return;
   }
+  const dk = e.target.closest("[data-dk]");
+  if (dk){ const key = dk.dataset.dk, id = +dk.dataset.id; S.d = S.d || {}; const cur = (S.d[key]||[]).slice(); if (!cur.includes(id)) cur.push(id); S.d[key] = cur; save(); render(); return; }
+  const dr = e.target.closest("[data-dkr]");
+  if (dr){ S.d = S.d || {}; delete S.d[dr.dataset.dkr]; save(); render(); return; }
   const r = e.target.closest("[data-res]");
   if (r){ const key = r.dataset.res, id = +r.dataset.id; if (S.r[key]===id) delete S.r[key]; else S.r[key]=id; save(); render(); return; }
   const k = e.target.closest("[data-ko]");
