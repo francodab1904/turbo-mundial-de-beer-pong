@@ -130,6 +130,11 @@ if (location.hash.slice(1) === ADMIN_CODE){
   try { localStorage.setItem(KEY + "-admin", "1"); } catch(e){}
   try { history.replaceState(null, "", "#cuadro"); } catch(e){ location.hash = "cuadro"; }
 }
+if (location.hash.slice(1) === "salir"){
+  isAdmin = false;
+  try { localStorage.removeItem(KEY + "-admin"); } catch(e){}
+  try { history.replaceState(null, "", "#cuadro"); } catch(e){}
+}
 let S;
 if (isAdmin){ try { S = JSON.parse(localStorage.getItem(KEY)) || fresh(); } catch(e){ S = fresh(); } }
 else S = fresh();
@@ -392,7 +397,15 @@ document.getElementById("app").addEventListener("change", e=>{
   if (t.dataset.name!==undefined){ S.teams[+t.dataset.name].name = t.value; save(); }
 });
 window.addEventListener("hashchange", ()=>{ const h=location.hash.slice(1); if(VIEWS.includes(h)){ view=h; render(); }});
-if (isAdmin){ const b=document.createElement("span"); b.textContent="🔑 Modo organizador"; b.style.cssText="align-self:center;color:#ffcf5c;font-weight:700;font-size:13px;margin-left:auto"; document.getElementById("nav").appendChild(b); }
+if (isAdmin){
+  const b=document.createElement("button"); b.textContent="🔑 Modo organizador · Salir";
+  b.style.cssText="margin-left:auto;background:transparent;border:1px solid #ffcf5c;color:#ffcf5c;font-weight:700;font-size:13px;padding:8px 14px;border-radius:999px;cursor:pointer";
+  b.onclick=()=>confirmBox("¿Salir del modo organizador en este celular? Vas a ver la página como la gente. Para volver, abrí de nuevo tu link secreto.", ()=>{
+    try{ localStorage.removeItem(KEY + "-admin"); }catch(e){}
+    location.hash = "cuadro"; location.reload();
+  });
+  document.getElementById("nav").appendChild(b);
+}
 render();
 banner();
 if (isAdmin) { if (S.slots) publish(); } else follow();
