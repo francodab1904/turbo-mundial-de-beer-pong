@@ -87,6 +87,7 @@
   <button data-v="equipos">Equipos</button>
   <button data-v="reglas">Reglas</button>
 </nav>
+<div id="live" style="display:none;max-width:1260px;margin:0 auto 10px;padding:10px 14px;border:1px solid #e0202a;border-radius:10px;background:rgba(224,32,42,.12);font-size:14px;width:calc(100% - 40px)"></div>
 <main id="app"></main>
 <div id="modal"></div>
 
@@ -132,59 +133,83 @@ if (location.hash.slice(1) === ADMIN_CODE){
 let S;
 if (isAdmin){ try { S = JSON.parse(localStorage.getItem(KEY)) || fresh(); } catch(e){ S = fresh(); } }
 else S = fresh();
-let view = VIEWS.includes(location.hash.slice(1)) ? location.hash.slice(1) : (isAdmin ? (S.slots ? "cuadro" : "equipos") : "reglas");
+let view = VIEWS.includes(location.hash.slice(1)) ? location.hash.slice(1) : (isAdmin ? (S.slots ? "cuadro" : "equipos") : "cuadro");
 // ---------- modo: local (organizador), viewer (solo mira) ----------
-let mode = isAdmin ? "local" : "viewer", liveRef = null, liveNote = "", dirty = false, busy = false;
+let mode = isAdmin ? "local" : "viewer";
 const RO = () => mode === "viewer";
 
+// ---------- en vivo: el organizador publica cada cambio en un canal de ntfy.sh y los demás lo escuchan ----------
+const NTFY = "https://ntfy.sh/turbo-mundial-bp-q7x3m9k2w5";
+let lastT = 0, liveState = "", pubTimer = null;
+const hhmm = t => new Date(t).toLocaleTimeString("es-AR",{hour:"2-digit",minute:"2-digit"});
+
 function save(){
-  if (mode === "owner") { dirty = true; if (!busy) flush(); return; }
-  if (mode === "local") { try{ localStorage.setItem(KEY, JSON.stringify(S)); }catch(e){} }
+  if (mode !== "local") return;
+  try{ localStorage.setItem(KEY, JSON.stringify(S)); }catch(e){}
+  clearTimeout(pubTimer); pubTimer = setTimeout(publish, 400);
 }
-async function flush(){
-  busy = true;
-  while (dirty){
-    dirty = false;
-    try { await liveRef.set(JSON.parse(JSON.stringify(S))); liveNote = ""; }
-    catch(e){ liveNote = "⚠️ No se pudo guardar el último cambio. Revisá la conexión y volvé a tocarlo."; banner(); }
-  }
-  busy = false;
+function pack(){
+  return JSON.stringify({v:1, t:Date.now(), n:S.teams.map(t=>t.name), s:S.slots, k:S.ko, r:S.rep});
+}
+function unpack(str){
+  let d; try { d = JSON.parse(str); } catch(e){ return null; }
+  if (!d || d.v!==1 || typeof d.t!=="number" || !Array.isArray(d.n) || d.n.length!==PLAYERS.length) return null;
+  const okId = x => Number.isInteger(x) && x>=0 && x<PLAYERS.length;
+  if (d.s!==null && !(Array.isArray(d.s) && d.s.length===16 && d.s.every(x=>x===null||x===REP||okId(x)))) return null;
+  if (typeof d.k!=="object" || d.k===null) return null;
+  const k = {};
+  for (const [key,val] of Object.entries(d.k)) if (/^r[0-3]m[0-7]$/.test(key) && (val===null||okId(val))) k[key]=val;
+  return { t:d.t, names:d.n.map(x=>String(x||"").slice(0,28)), slots:d.s, ko:k, rep: okId(d.r)?d.r:null };
+}
+function apply(d){
+  lastT = d.t;
+  S = { teams: PLAYERS.map((p,i)=>({id:i, name:d.names[i], players:p})), slots:d.slots, ko:d.ko, rep:d.rep };
+  liveState = "Última actualización: " + hhmm(d.t);
+  banner(); render();
+}
+async function publish(){
+  try {
+    const r = await fetch(NTFY, {method:"POST", body: pack()});
+    liveState = r.ok ? "✅ Publicado " + hhmm(Date.now()) : "⚠️ No se pudo publicar (" + r.status + "). Tocá de nuevo en un rato.";
+  } catch(e){ liveState = "⚠️ Sin conexión: el cambio quedó guardado en tu celular, se publica en el próximo cambio."; }
+  banner();
+}
+async function pollLatest(){
+  try {
+    const r = await fetch(NTFY + "/json?poll=1&since=12h");
+    const txt = await r.text();
+    let best = null;
+    for (const line of txt.split("\n")){
+      if (!line.trim()) continue;
+      let o; try { o = JSON.parse(line); } catch(e){ continue; }
+      if (o.event!=="message") continue;
+      const d = unpack(o.message);
+      if (d && (!best || d.t > best.t)) best = d;
+    }
+    if (best && best.t > lastT) apply(best);
+    else if (!best && !lastT){ liveState = "Esperando que arranque el torneo…"; banner(); }
+  } catch(e){ liveState = "⚠️ No se pudo conectar. Reintentando…"; banner(); }
+}
+function follow(){
+  pollLatest();
+  try {
+    const es = new EventSource(NTFY + "/sse");
+    es.onmessage = e => {
+      let o; try { o = JSON.parse(e.data); } catch(err){ return; }
+      if (o.event!=="message") return;
+      const d = unpack(o.message);
+      if (d && d.t > lastT) apply(d);
+    };
+    es.onopen = () => pollLatest();      // al reconectar, ponerse al día
+  } catch(e){}
+  setInterval(pollLatest, 60000);         // red de seguridad
+  document.addEventListener("visibilitychange", ()=>{ if (!document.hidden) pollLatest(); });
 }
 function banner(){
   const b = document.getElementById("live");
   if (!b) return;
-  if (mode === "local"){ b.style.display = "none"; return; }
   b.style.display = "block";
-  b.innerHTML = (mode === "owner"
-    ? `<b>🔴 EN VIVO</b> · Vos cargás los resultados y todos los ven al instante.`
-    : `<b>🔴 EN VIVO</b> · Solo lectura: el cuadro se actualiza solo.`) + (liveNote ? `<br>${liveNote}` : "");
-}
-async function goLive(){
-  if (!window.claude || typeof window.claude.use !== "function") return;
-  let db, user;
-  try { [db, user] = await Promise.all([window.claude.use("db"), window.claude.use("user")]); } catch(e){ return; }
-  if (!db) return;
-  const owner = user ? await user.isOwner() : false;
-  liveRef = db.doc("torneo/estado");
-  let timer = setTimeout(()=>{ liveNote = "Conectando… si no carga, puede estar desactualizado."; banner(); }, 10000);
-  let first = true;
-  liveRef.onSnapshot(snap => {
-    if (!snap.metadata.fromCache){ clearTimeout(timer); if (liveNote.startsWith("Conectando")) liveNote = ""; }
-    if (first){
-      first = false;
-      mode = owner ? "owner" : "viewer";
-      if (mode === "viewer" && !location.hash) view = "cuadro";
-      if (!snap.exists && owner){ save(); }          // primera vez: sube lo que tenías cargado
-    }
-    if (snap.exists){
-      const d = snap.data();
-      if (mode === "owner" && (busy || dirty)) { banner(); return; } // no pisar un cambio propio en curso
-      S = { teams: (d.teams||fresh().teams).map(t=>({...t})), slots: d.slots ? [...d.slots] : null, ko: {...(d.ko||{})}, rep: d.rep ?? null };
-    } else if (mode === "viewer"){
-      S = fresh(); S.slots = null;
-    }
-    banner(); render();
-  }, () => { clearTimeout(timer); liveNote = "Se cortó la conexión en vivo. Recargá la página."; banner(); });
+  b.innerHTML = (isAdmin ? "<b>🔴 EN VIVO</b> · Vos cargás, todos lo ven." : "<b>🔴 EN VIVO</b> · El cuadro se actualiza solo.") + (liveState ? " " + esc(liveState) : "");
 }
 
 const T = id => S.teams[id];
@@ -277,7 +302,7 @@ function tie(r,m){
 }
 
 function vCuadro(){
-  if (!S.slots) return `<div class="empty">Todavía no se sorteó el cuadro.<br><br>${RO() ? "El cuadro oficial lo lleva la organización.<br>Los resultados van saliendo por el grupo de WhatsApp. 🍺" : `<button class="btn" data-act="sorteo">🎲 Sortear cuadro</button>`}</div>`;
+  if (!S.slots) return `<div class="empty">Todavía no se sorteó el cuadro.<br><br>${RO() ? "Cuando se sortee, aparece acá solo. 🍺" : `<button class="btn" data-act="sorteo">🎲 Sortear cuadro</button>`}</div>`;
   const champ = winner(3,0);
   const col = (r,n) => `<div class="col"><h3>${ROUNDS[r]}</h3>${Array.from({length:n},(_,m)=>tie(r,m)).join("")}</div>`;
   return `
@@ -369,6 +394,8 @@ document.getElementById("app").addEventListener("change", e=>{
 window.addEventListener("hashchange", ()=>{ const h=location.hash.slice(1); if(VIEWS.includes(h)){ view=h; render(); }});
 if (isAdmin){ const b=document.createElement("span"); b.textContent="🔑 Modo organizador"; b.style.cssText="align-self:center;color:#ffcf5c;font-weight:700;font-size:13px;margin-left:auto"; document.getElementById("nav").appendChild(b); }
 render();
+banner();
+if (isAdmin) { if (S.slots) publish(); } else follow();
 </script>
 </body>
 </html>
