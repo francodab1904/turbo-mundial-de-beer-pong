@@ -95,6 +95,10 @@
   .rules h4::before{content:"";width:12px;height:12px;border-radius:50%;background:var(--orange)}
   .rules p{margin:0 0 12px;line-height:1.5;font-size:15px}
   .rules b{color:#fff} .rules .y{color:var(--gold);font-weight:800} .rules .r{color:var(--red);font-weight:800}
+  .steps{display:grid;gap:10px;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));margin:6px 0 10px}
+  .steps>div{display:flex;gap:12px;align-items:flex-start;background:var(--panel2);border:1px solid var(--line);border-radius:12px;padding:12px}
+  .steps>div>span{flex-shrink:0;width:34px;height:34px;border-radius:50%;background:var(--orange);color:#1b0d00;font-weight:800;font-size:18px;display:flex;align-items:center;justify-content:center}
+  .steps p{margin:0;font-size:15px;line-height:1.45}
   .modal{position:fixed;inset:0;background:rgba(0,0,0,.65);display:flex;align-items:center;justify-content:center;z-index:20;padding:16px}
   .modal .box{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:20px;max-width:380px;width:100%}
   .modal .box p{margin:0 0 16px;line-height:1.5}
@@ -256,10 +260,10 @@ function render(){
 function pendBox(p, show){
   if (!show) return "";
   const n = p.ids.length;
-  if (RO()) return `<div class="card" style="border-color:var(--amber);margin:4px 0 12px;padding:10px 12px"><b style="color:var(--amber)">🎯 Desempate en la mesa</b><div class="hint">Empate de ${n} equipos con ${p.pts} ${p.pts===1?"punto":"puntos"}. Se define con un tiro de desempate.</div></div>`;
+  if (RO()) return `<div class="card" style="border-color:var(--amber);margin:4px 0 12px;padding:10px 12px"><b style="color:var(--amber)">🎯 Desempate en la mesa</b><div class="hint">Empate de ${n} equipos con ${p.pts} ${p.pts===1?"punto":"puntos"}. Un vaso por equipo, tira un representante de cada uno y el primero que mete queda arriba.</div></div>`;
   return `<div class="card" style="border-color:var(--amber);margin:4px 0 12px;padding:10px 12px">
     <b style="color:var(--amber)">🎯 Desempate en la mesa</b>
-    <div class="hint" style="margin:2px 0 8px">Empate de ${n} equipos con ${p.pts} ${p.pts===1?"punto":"puntos"}. Tocá en orden quién quedó 1°, 2°${n>2?", 3°":""}.</div>
+    <div class="hint" style="margin:2px 0 8px">Empate de ${n} equipos con ${p.pts} ${p.pts===1?"punto":"puntos"}. Un vaso por equipo, tira un representante de cada uno: el primero que mete queda arriba. Tocá en orden quién quedó 1°, 2°${n>2?", 3°":""}.</div>
     <div style="display:flex;gap:6px;flex-wrap:wrap">${p.ids.map(id=>{ const k = p.partial.indexOf(id);
       return `<div class="tm click ${k>=0?"win":""}" data-dk="${p.dk}" data-id="${id}">${k>=0?(k+1)+"° · ":""}${esc(tname(id))}</div>`; }).join("")}
       ${p.partial.length ? `<button class="btn ghost" data-dkr="${p.dk}" style="padding:8px 12px">Borrar</button>` : ""}</div>
@@ -372,11 +376,15 @@ function vReglas(){
       <p>• 12 equipos en 3 grupos de 4. Todos contra todos en el grupo: <b>3 partidos cada uno</b>.</p>
       <p>• Pasan a <span class="y">cuartos</span> los 2 primeros de cada grupo y los 2 mejores terceros. Después semis y final.</p>
     </div>
-    <div class="card"><h4>Puntos y desempate</h4>
-      <p>• Partido ganado = <b>1 punto</b>. Partido perdido = <b>0 puntos</b>.</p>
-      <p>• Si empatan en puntos: <b>1)</b> más puntos; <b>2)</b> si empatan 2 equipos, pasa el que <span class="y">ganó el partido entre ellos</span>; <b>3)</b> si empatan 3 o más, <span class="y">tiro de desempate en la mesa</span>.</p>
-      <p>• Tiro de desempate: tira un jugador de cada equipo por turno. El que erra cuando el otro mete, queda abajo.</p>
-      <p>• Mejores terceros: se comparan por puntos. Si empatan, se define por <span class="y">sorteo</span>.</p></div>
+    <div class="card" style="grid-column:1/-1;border-color:var(--orange)"><h4>Cómo se clasifica</h4>
+      <p>Partido ganado = <b>1 punto</b> · Partido perdido = <b>0 puntos</b>. Si dos o más equipos terminan igualados, se desempata en este orden:</p>
+      <div class="steps">
+        <div><span>1</span><p><b>Puntos.</b> Queda arriba el que tiene más puntos.</p></div>
+        <div><span>2</span><p><b>Partido entre ellos.</b> Si empatan 2 equipos, queda arriba el que le ganó al otro en el grupo.</p></div>
+        <div><span>3</span><p><b>Desempate en la mesa.</b> Si empatan 3 equipos (cada uno le ganó a otro), se pone <span class="y">un vaso por equipo</span> y tira <span class="y">un representante de cada equipo</span>, por turnos. <b>El primero que mete, queda arriba.</b> Los que quedan vuelven a tirar para definir el resto.</p></div>
+      </div>
+      <p style="margin-top:6px">• <b>Mejores terceros:</b> pasan a cuartos los 2 terceros con más puntos. Si empatan, se define por <span class="y">sorteo</span>.</p>
+    </div>
     <div class="card"><h4>Bebidas y equipos</h4>
       <p>• Se juega con 2 cervezas con alcohol por equipo.</p>
       <p>• Una pelota por jugador (equipo de 3, tres pelotas por mesa).</p></div>
