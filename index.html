@@ -126,9 +126,9 @@
 <script>
 // ===== Configuración de esta versión =====
 const LIVE = true;            // true: GitHub (en vivo, solo organizador carga) · false: Claude (todos usan su copia)
-const NTFY = "https://ntfy.sh/turbo-mundial-bp-v5-h2x8q4";
+const NTFY = "https://ntfy.sh/turbo-mundial-bp-v6-t5k1z7";
 const ADMIN_CODE = "admin-mc7k2q";
-const KEY = "tmbp-v5";
+const KEY = "tmbp-v6";
 const ADMIN_FLAG = "tmbp-v3-admin";   // mismo permiso de organizador que la versión anterior
 
 const MAX = 24, MIN = 4, MAXG = 6;
@@ -166,6 +166,12 @@ function formatFor(n){
   const direct = Math.floor(K/G), extraQ = K % G; // pasan directo los primeros "direct" de cada grupo; después los mejores del siguiente puesto
   return { n, G, sizes, K, direct, extraQ };
 }
+const MODES = {
+  grupos: { lbl:"Grupo + fase eliminatoria", desc:"Grupos de 3 a 5, todos contra todos, y los mejores pasan a la eliminación." },
+  elim:   { lbl:"Sistema eliminatorio", desc:"Cuadro directo desde el principio. El que pierde, afuera (o a la Copa de Plata)." },
+  gsolo:  { lbl:"Fase de grupos (sin eliminatorias)", desc:"Grupos de 3 a 5, todos contra todos. El primero de cada grupo es el campeón del grupo; no hay cruces." },
+  liga:   { lbl:"Liga (varias jornadas)", desc:"Una sola tabla: todos contra todos, fecha por fecha. Gana el que suma más (con final opcional entre los 2 primeros)." }
+};
 const roundName = size => ({2:"Final",4:"Semis",8:"Cuartos",16:"Octavos"})[size] || ("Ronda de " + size);
 
 // ===== organizador =====
@@ -183,7 +189,8 @@ function randTb(){ return Array.from({length:MAX}, ()=>Math.random()); }
 function freshTables(c=3){ return Array.from({length:c}, ()=>({hold:false, match:null})); }
 function fresh(){
   return { n: 12, names: Array(MAX).fill(""), players: Array.from({length:MAX},(_,i)=>DEFAULT_TEAMS[i]||""),
-           gn: LETTERS.map(l=>"Grupo "+l), g: null, r: {}, k: {}, d: {}, m: freshTables(), pl: true, tb: randTb() };
+           gn: LETTERS.map(l=>"Grupo "+l), g: null, r: {}, k: {}, d: {}, m: freshTables(), pl: true, tb: randTb(),
+           mode: "grupos", lf: false, sr: 3, sw: [] };
 }
 let S = fresh();
 if (isAdmin){ try { const s = JSON.parse(localStorage.getItem(KEY)); if (s && s.players) S = Object.assign(fresh(), s); } catch(e){} }
@@ -193,10 +200,32 @@ const esc = s => String(s).replace(/[&<>"]/g, c=>({"&":"&amp;","<":"&lt;",">":"&
 const tname = id => (S.names[id]||"").trim() || ("Equipo " + (id+1));
 const okId = x => Number.isInteger(x) && x>=0 && x<S.n;
 const pkey = (a,b) => Math.min(a,b) + "-" + Math.max(a,b);
-const F = () => formatFor(S.n);
+const mode = () => MODES[S.mode] ? S.mode : "grupos";
+function F(){
+  const m = mode(), n = S.n;
+  if (m === "grupos") return Object.assign({mode:m}, formatFor(n));
+  if (m === "gsolo") return Object.assign({mode:m}, formatFor(n), {K:0, direct:0, extraQ:0});
+  let K;
+  if (m === "elim"){ K = 1; while (K < n) K *= 2; }                       // cuadro con pases directos si no da justo
+  else if (m === "liga") K = S.lf ? 2 : 0;                               // final entre los 2 primeros (opcional)
+  else { K = 2; while (K*2 <= Math.floor(2*n/3)) K *= 2; }               // suizo: pasa la potencia de 2 que entra en 2/3 de los equipos
+  return { mode:m, n, G:0, sizes:[], K, direct:0, extraQ:0 };
+}
+const swissRounds = () => Math.max(1, Math.min(S.sr||3, 6, S.n-1));
+function roundRobin(ids){
+  const a = [...ids]; if (a.length % 2) a.push(null);
+  const n = a.length, out = [];
+  for (let r=0; r<n-1; r++){
+    const f = [];
+    for (let i=0;i<n/2;i++){ const x = a[i], y = a[n-1-i]; if (x!==null && y!==null) f.push([x,y]); }
+    out.push(f); a.splice(1, 0, a.pop());
+  }
+  return out;
+}
 function groupStart(gi){ const s = F().sizes; let o = 0; for (let i=0;i<gi;i++) o += s[i]; return o; }
 const groupIds = gi => S.g ? S.g.slice(groupStart(gi), groupStart(gi) + F().sizes[gi]) : [];
-const groupOf = id => { if (!S.g) return -1; const p = S.g.indexOf(id), s = F().sizes; let o = 0; for (let i=0;i<s.length;i++){ if (p < o + s[i]) return i; o += s[i]; } return -1; };
+const hasGroups = () => mode()==="grupos" || mode()==="gsolo";
+const groupOf = id => { if (!S.g || !hasGroups()) return -1; const p = S.g.indexOf(id), s = F().sizes; let o = 0; for (let i=0;i<s.length;i++){ if (p < o + s[i]) return i; o += s[i]; } return -1; };
 const fixtureOf = gi => FIX[F().sizes[gi]];
 
 // ===== tablas =====
@@ -238,14 +267,94 @@ function rank(rows, key, h2h, auto){
   }
   return { rows: out, pend };
 }
-const allDone = () => !!S.g && Array.from({length:F().G},(_,gi)=>gi).every(gi=>standings(gi).done);
-const tiesReady = () => allDone() && Array.from({length:F().G},(_,gi)=>gi).every(gi=>standings(gi).pend.length===0);
+function allDone(){
+  if (!S.g) return false;
+  const m = mode();
+  if (m==="elim") return true;
+  if (m==="liga") return ligaTable().done;
+  if (m==="suizo") return (S.sw||[]).length===swissRounds() && swissRoundDone(S.sw[S.sw.length-1]);
+  return Array.from({length:F().G},(_,gi)=>gi).every(gi=>standings(gi).done);
+}
+function tiesReady(){
+  if (!allDone()) return false;
+  const m = mode();
+  if (m==="liga") return ligaTable().pend.length===0;
+  if (m!=="grupos") return true;
+  return Array.from({length:F().G},(_,gi)=>gi).every(gi=>standings(gi).pend.length===0);
+}
+// ----- liga -----
+function ligaMatches(){ return S.g ? roundRobin(S.g) : []; }
+function ligaTable(){
+  const rows = (S.g||[]).map(id=>({id, gi:-1, pj:0, pg:0, pp:0, pts:0}));
+  const by = Object.fromEntries(rows.map(r=>[r.id,r]));
+  let played = 0, total = 0;
+  for (const f of ligaMatches()) for (const [a,b] of f){
+    total++; const w = S.r[pkey(a,b)]; if (w!==a && w!==b) continue; played++;
+    const W = by[w], L = by[w===a?b:a]; W.pj++; L.pj++; W.pg++; W.pts++; L.pp++;
+  }
+  const rk = rank(rows, "L", true, false);
+  return { rows: rk.rows, pend: rk.pend, done: total>0 && played===total };
+}
+// ----- suizo -----
+function swissTable(){
+  const rows = (S.g||[]).map(id=>({id, gi:-1, pj:0, pg:0, pp:0, pts:0, bye:0, opp:[]}));
+  const by = Object.fromEntries(rows.map(r=>[r.id,r]));
+  for (const rd of (S.sw||[])){
+    if (rd.b!==null && by[rd.b]){ by[rd.b].pts++; by[rd.b].bye++; }
+    for (const [a,b] of rd.p){
+      by[a].opp.push(b); by[b].opp.push(a);
+      const w = S.r[pkey(a,b)]; if (w!==a && w!==b) continue;
+      const W = by[w], L = by[w===a?b:a]; W.pj++; L.pj++; W.pg++; W.pts++; L.pp++;
+    }
+  }
+  rows.forEach(r=>{ r.buch = r.opp.reduce((s,o)=>s + by[o].pts, 0); });
+  rows.sort((x,y)=> (y.pts-x.pts) || (y.buch-x.buch) || (S.tb[y.id]-S.tb[x.id]));
+  for (let i=0;i<rows.length-1;i++){   // si empatan 2 en todo y jugaron entre ellos, manda el partido
+    const x = rows[i], y = rows[i+1];
+    if (x.pts===y.pts && x.buch===y.buch && (i+2>=rows.length || rows[i+2].pts!==x.pts || rows[i+2].buch!==x.buch) && S.r[pkey(x.id,y.id)]===y.id){ rows[i]=y; rows[i+1]=x; }
+  }
+  return rows;
+}
+function swissRoundDone(rd){ return rd.p.every(([a,b])=>{ const w = S.r[pkey(a,b)]; return w===a || w===b; }); }
+function nextSwissRound(){
+  const sw = S.sw, played = new Set(), byes = new Set();
+  sw.forEach(rd=>{ rd.p.forEach(([a,b])=>played.add(pkey(a,b))); if (rd.b!==null) byes.add(rd.b); });
+  let order = sw.length ? swissTable().map(r=>r.id) : [...S.g];
+  let bye = null;
+  if (order.length % 2){
+    for (let i=order.length-1;i>=0;i--) if (!byes.has(order[i])){ bye = order[i]; break; }
+    if (bye===null) bye = order[order.length-1];
+    order = order.filter(x=>x!==bye);
+  }
+  const pair = (list, allowRe) => {
+    if (!list.length) return [];
+    const [a, ...rest] = list;
+    for (let i=0;i<rest.length;i++){
+      if (!allowRe && played.has(pkey(a,rest[i]))) continue;
+      const sub = pair(rest.filter((_,j)=>j!==i), allowRe);
+      if (sub) return [[a,rest[i]], ...sub];
+    }
+    return null;
+  };
+  return { p: pair(order,false) || pair(order,true), b: bye };
+}
+function ensureSwiss(){
+  if (mode()!=="suizo" || !S.g) return;
+  if (!Array.isArray(S.sw)) S.sw = [];
+  while (S.sw.length > swissRounds()) S.sw.pop();
+  if (S.sw.length < swissRounds() && (!S.sw.length || swissRoundDone(S.sw[S.sw.length-1]))) S.sw.push(nextSwissRound());
+}
 function tierRank(p){ return rank(Array.from({length:F().G},(_,gi)=>standings(gi).rows[p]).filter(Boolean), "t", false, true).rows; }
 
 // ===== llaves =====
 function bracketOrder(K){ let o = [1]; while (o.length < K){ const m = o.length*2+1; o = o.flatMap(s=>[s, m-s]); } return o; }
 function seeds(){
   if (!tiesReady()) return null;
+  const m = mode();
+  if (m==="gsolo") return null;
+  if (m==="elim") return S.g.map(id=>({id}));
+  if (m==="liga") return S.lf ? ligaTable().rows.slice(0,2) : null;
+  if (m==="suizo") return swissTable().slice(0, F().K);
   const f = F(), list = [];
   for (let p=0; p<f.direct; p++) list.push(...tierRank(p));
   if (f.extraQ) list.push(...tierRank(f.direct).slice(0, f.extraQ));
@@ -254,17 +363,25 @@ function seeds(){
 // ranking de los que quedaron afuera de la Copa de Oro, para la Copa de Plata
 function eliminated(){
   const sd = seeds(); if (!sd) return null;
+  const m = mode();
+  if (m==="liga") return null;
+  if (m==="suizo") return swissTable().slice(F().K);
+  if (m==="elim"){            // los que pierden su primer partido
+    const fr = firstRound("r"), out = [];
+    for (let i=0;i<fr.length;i++){ const [a,b] = fr[i]; if (a===null || b===null) continue; const w = winner(koKey("r",0,i)); if (w===null) return null; out.push({id: w===a ? b : a}); }
+    return out;
+  }
   const q = new Set(sd.map(r=>r.id)), order = [], maxS = Math.max(...F().sizes);
   for (let p=0; p<maxS; p++) order.push(...tierRank(p));
   return order.filter(r=>!q.has(r.id));
 }
-const plataCount = () => S.n - F().K;
+function plataCount(){ const m = mode(), f = F(); if (m==="liga" || m==="gsolo") return 0; if (m==="elim") return S.n - f.K/2; return S.n - f.K; }
 function plataSize(){ const E = plataCount(); if (!S.pl || E < 2) return 0; let P = 1; while (P < E) P *= 2; return P; }
 function pairUp(list, size){       // list: equipos ordenados (mejor primero); los lugares que faltan son pases directos para los mejores
   const ord = bracketOrder(size), pairs = [];
   for (let i=0;i<size;i+=2) pairs.push([list[ord[i]-1]||null, list[ord[i+1]-1]||null]);
   for (let a=0;a<pairs.length;a++){   // evitar dos del mismo grupo en la primera ronda
-    const [x,y] = pairs[a]; if (!x || !y || groupOf(x.id) !== groupOf(y.id)) continue;
+    const [x,y] = pairs[a]; if (!x || !y || groupOf(x.id) < 0 || groupOf(x.id) !== groupOf(y.id)) continue;
     for (let b=0;b<pairs.length;b++){
       if (b===a || !pairs[b][0] || !pairs[b][1]) continue;
       if (groupOf(x.id) !== groupOf(pairs[b][1].id) && groupOf(pairs[b][0].id) !== groupOf(y.id)){ const t = pairs[a][1]; pairs[a][1] = pairs[b][1]; pairs[b][1] = t; break; }
@@ -276,7 +393,7 @@ function firstRound(pre){
   if (pre==="p"){ const P = plataSize(), el = eliminated(); return P && el ? pairUp(el, P) : null; }
   const sd = seeds(); return sd ? pairUp(sd, F().K) : null;
 }
-function rounds(pre){ const K = pre==="p" ? plataSize() : F().K, R = []; for (let s=K; s>=2; s/=2) R.push(s); return R; }
+function rounds(pre){ const K = pre==="p" ? plataSize() : F().K, R = []; if (K < 2) return R; for (let s=K; s>=2; s/=2) R.push(s); return R; }
 const koKey = (pre,ri,i) => pre+ri+"m"+i;
 const parseKey = m => { const [ri,i] = m.slice(1).split("m").map(Number); return {pre:m[0], ri, i}; };
 function koList(pre){ const out = []; rounds(pre).forEach((s,ri)=>{ for (let i=0;i<s/2;i++) out.push(koKey(pre,ri,i)); }); return out; }
@@ -303,6 +420,8 @@ function winner(m){
   return sd.some(s=>s.id===w) ? w : null;
 }
 function seedLabel(id){
+  const m = mode();
+  if (m==="liga" || m==="suizo"){ const rows = m==="liga" ? ligaTable().rows : swissTable(); const i = rows.findIndex(r=>r.id===id); return i<0 ? "" : (i+1) + "°"; }
   const g = groupOf(id); if (g<0) return "";
   const pos = standings(g).rows.findIndex(r=>r.id===id);
   return (pos+1) + "° " + LETTERS[g];
@@ -312,7 +431,11 @@ function seedLabel(id){
 function allMatches(){
   const out = [];
   if (!S.g) return out;
-  const f = F(), maxF = Math.max(...f.sizes.map(s=>FIX[s].length));
+  const f = F(), md = mode();
+  const add = (a,b,lbl) => out.push({ id:"g:"+pkey(a,b), teams:[a,b], lbl, kind:"g", key:pkey(a,b) });
+  if (md==="liga") ligaMatches().forEach((fx,fi)=>fx.forEach(([a,b])=>add(a,b,"Fecha " + (fi+1))));
+  if (md==="suizo") (S.sw||[]).forEach((rd,fi)=>rd.p.forEach(([a,b])=>add(a,b,"Fecha " + (fi+1))));
+  const maxF = f.sizes.length ? Math.max(...f.sizes.map(s=>FIX[s].length)) : 0;
   for (let fi=0; fi<maxF; fi++) for (let gi=0; gi<f.G; gi++){
     const fx = fixtureOf(gi); if (fi >= fx.length) continue;
     const ids = groupIds(gi);
@@ -341,20 +464,40 @@ function fillTables(){
 
 // ===== vistas =====
 function render(){
-  document.querySelectorAll("#nav button[data-v]").forEach(b=>b.classList.toggle("on", b.dataset.v===view));
+  const m = mode();
+  document.querySelectorAll("#nav button[data-v]").forEach(b=>{
+    b.classList.toggle("on", b.dataset.v===view);
+    if (b.dataset.v==="grupos") b.textContent = m==="liga" ? "📊 Tabla" : m==="elim" ? "📋 Sorteo" : "📊 Grupos";
+  });
   const app = document.getElementById("app");
   app.innerHTML = view==="mesas" ? vMesas() : view==="llaves" ? vLlaves() : view==="equipos" ? vEquipos() : view==="reglas" ? vReglas() : vGrupos();
 }
+function totalMatches(){
+  const f = F(), m = mode(), E = plataCount(), pl = S.pl && E >= 2 ? E - 1 : 0;
+  if (m==="liga") return S.n*(S.n-1)/2 + (S.lf ? 1 : 0);
+  if (m==="elim") return S.n - 1 + pl;
+  const g = f.sizes.reduce((a,x)=>a + x*(x-1)/2, 0);
+  return g + (m==="grupos" ? f.K - 1 + pl : 0);
+}
 function formatText(f){
+  const m = mode(), E = plataCount();
+  const plata = !S.pl || E < 2 ? "" : `Los otros ${E} juegan la Copa de Plata.`;
+  const total = `En total son ${totalMatches()} partidos.`;
+  if (m==="elim"){
+    const byes = f.K - S.n;
+    return { summary: `Cuadro de eliminación directa (${roundName(f.K).toLowerCase()}).${byes ? ` Como no da justo, ${byes} ${byes===1?"equipo pasa":"equipos pasan"} directo a la segunda ronda (por sorteo).` : ""} ${S.pl && E>=2 ? `Los ${E} que pierden su primer partido juegan la Copa de Plata.` : ""} ${total}`, plata };
+  }
+  if (m==="liga"){
+    return { summary: `Liga: todos contra todos en ${S.n % 2 ? S.n : S.n-1} fechas (${S.n-1} partidos cada uno).${S.n % 2 ? " En cada fecha un equipo descansa." : ""} Gana el que suma más puntos${S.lf ? ", y al final juegan una final el 1° y el 2°" : ""}. ${total}`, plata:"" };
+  }
   const gs = f.G===1 ? `1 grupo de ${f.sizes[0]}` : `${f.G} grupos (${f.sizes.join(", ")} equipos)`;
-  const pj = [...new Set(f.sizes.map(s=>s-1))].join(" o ");
+  const pj = [...new Set(f.sizes.map(x=>x-1))].join(" o ");
+  if (m==="gsolo") return { summary: `${gs}, todos contra todos (${pj} partidos cada uno). No hay eliminatoria: el 1° de cada grupo es el campeón del grupo. ${total}`, plata:"", gs, pj };
   const ord = ["primeros","segundos","terceros","cuartos"];
   let pasan = f.direct===1 ? "el 1° de cada grupo" : `los ${f.direct} primeros de cada grupo`;
   if (f.extraQ) pasan += ` y ${f.extraQ===1 ? "el mejor" : "los " + f.extraQ + " mejores"} ${ord[f.direct]}`;
   const ronda = f.K===2 ? "la final" : roundName(f.K).toLowerCase();
-  const E = f.n - f.K;
-  const plata = !S.pl || E < 2 ? "" : `Los otros ${E} juegan la Copa de Plata.`;
-  return { gs, pj, pasan, ronda, plata };
+  return { summary: `${gs}, todos contra todos (${pj} partidos cada uno). Pasan ${pasan} a ${ronda} de la Copa de Oro. ${plata} ${total}`, gs, pj, pasan, ronda, plata };
 }
 function pendBox(p, show){
   if (!show) return "";
@@ -369,9 +512,12 @@ function pendBox(p, show){
   </div>`;
 }
 function vGrupos(){
+  const md = mode();
+  if (md==="liga") return vLiga();
+  if (md==="elim") return vSorteo();
   if (!S.g) return `<div class="empty">Todavía no se armaron los grupos.<br><br>${RO() ? "Cuando se sorteen, aparecen acá solos. 🍺" : `<button class="btn" data-act="sorteo">🎲 Sortear grupos</button><br><br><span class="hint">Elegí cuántos equipos son en la pestaña Equipos.</span>`}</div>`;
   const f = F(), ord = ["primeros","segundos","terceros","cuartos"];
-  const zone = p => p < f.direct ? "z-oro" : (p===f.direct && f.extraQ) ? "z-ter" : "z-plata";
+  const zone = p => md==="gsolo" ? (p===0 ? "z-oro" : "") : p < f.direct ? "z-oro" : (p===f.direct && f.extraQ) ? "z-ter" : "z-plata";
   const tier = f.extraQ && allDone() ? tierRank(f.direct) : null;
   const tierLive = f.extraQ ? tierRank(f.direct) : null;
   return `
@@ -408,10 +554,52 @@ function vGrupos(){
     </div>` : ""}
   </div>
   <div class="legend">
-    <span><i style="background:var(--green)"></i>Pasan a ${f.K===2?"la final":roundName(f.K).toLowerCase()}</span>
+    ${md==="gsolo" ? `<span><i style="background:var(--green)"></i>Campeón del grupo</span>` : `<span><i style="background:var(--green)"></i>Pasan a ${f.K===2?"la final":roundName(f.K).toLowerCase()}</span>
     ${f.extraQ ? `<span><i style="background:var(--amber)"></i>Depende de la tabla de mejores ${ord[f.direct]}</span>` : ""}
-    <span><i style="background:var(--silver)"></i>Quedan afuera</span>
+    <span><i style="background:var(--silver)"></i>Quedan afuera</span>`}
     <span>PJ jugados · PG ganados · PP perdidos · Pts 1 por victoria</span>
+  </div>`;
+}
+function matchRow(a,b){
+  const w = S.r[pkey(a,b)];
+  const cl = id => (w===a||w===b) ? (w===id ? "win" : "lose") : "";
+  const clk = id => RO() ? "" : `data-res="${pkey(a,b)}" data-id="${id}"`;
+  return `<div class="match">
+    <div class="tm ${cl(a)} ${RO()?"":"click"}" ${clk(a)} title="${esc(S.players[a])}">${w===a?"✓ ":""}${esc(tname(a))}</div>
+    <div class="vs">VS</div>
+    <div class="tm r ${cl(b)} ${RO()?"":"click"}" ${clk(b)} title="${esc(S.players[b])}">${esc(tname(b))}${w===b?" ✓":""}</div></div>`;
+}
+function vLiga(){
+  if (!S.g) return `<div class="empty">Todavía no se sorteó el fixture.<br><br>${RO() ? "Cuando se sortee, aparece acá solo. 🍺" : `<button class="btn" data-act="sorteo">🎲 Sortear fixture</button>`}</div>`;
+  const t = ligaTable(), fx = ligaMatches();
+  const z = i => S.lf ? (i<2 ? "z-oro" : "") : (i===0 ? "z-oro" : "");
+  const doneF = fx.map(f=>f.every(([a,b])=>{ const w = S.r[pkey(a,b)]; return w===a||w===b; }));
+  const cur = doneF.indexOf(false);
+  return `
+  ${RO() ? "" : `<div class="bar"><span class="hint">Tocá al equipo que ganó cada partido (1 punto). Si al terminar la liga empatan 3 o más, te aparece el desempate para cargar.</span></div>`}
+  <div class="groups" style="grid-template-columns:repeat(auto-fill,minmax(380px,1fr))">
+    <div class="card">
+      <div class="gtitle">Tabla <small>${t.done ? "✅ terminada" : cur>=0 ? "Fecha " + (cur+1) + " de " + fx.length : ""}</small></div>
+      <table class="tbl"><colgroup><col style="width:30px"><col><col style="width:34px"><col style="width:34px"><col style="width:34px"><col style="width:40px"></colgroup>
+        <tr><th>#</th><th class="tn">Equipo</th><th>PJ</th><th>PG</th><th>PP</th><th>Pts</th></tr>
+        ${t.rows.map((r,i)=>`<tr class="${z(i)}"><td class="pos">${i+1}</td><td class="tn" title="${esc(S.players[r.id])}">${esc(tname(r.id))}</td><td>${r.pj}</td><td>${r.pg}</td><td>${r.pp}</td><td class="pts">${r.pts}</td></tr>`).join("")}
+      </table>
+      ${t.pend.map(p=>pendBox(p, t.done)).join("")}
+      <div class="legend"><span><i style="background:var(--green)"></i>${S.lf ? "Juegan la final" : "Campeón"}</span><span>Pts 1 por victoria</span></div>
+    </div>
+    <div class="card">
+      <div class="gtitle">Fechas <small>${fx.length} en total</small></div>
+      ${fx.map((f,fi)=>`<div class="fecha" style="${fi===cur?"color:var(--orange)":""}">Fecha ${fi+1}${doneF[fi]?" ✓":""}</div>${f.map(([a,b])=>matchRow(a,b)).join("")}`).join("")}
+    </div>
+  </div>`;
+}
+function vSorteo(){
+  if (!S.g) return `<div class="empty">Todavía no se sorteó el cuadro.<br><br>${RO() ? "Cuando se sortee, aparece acá solo. 🍺" : `<button class="btn" data-act="sorteo">🎲 Sortear cuadro</button>`}</div>`;
+  const f = F(), byes = f.K - S.n;
+  return `<div class="card" style="max-width:640px">
+    <div class="gtitle">Orden del sorteo</div>
+    <div class="hint" style="margin:4px 0 10px">${byes ? `Los ${byes} primeros del sorteo pasan directo a la segunda ronda. ` : ""}El cuadro está en la pestaña Llaves.</div>
+    ${S.g.map((id,i)=>`<div style="display:flex;gap:12px;padding:8px 0;border-top:1px solid var(--line)"><b style="color:var(--orange);min-width:26px">${i+1}.</b><span><b>${esc(tname(id))}</b> <span class="hint">${esc(S.players[id])}</span>${i<byes?` <span class="tag" style="color:var(--green);font-weight:800;font-size:11px">PASA DIRECTO</span>`:""}</span></div>`).join("")}
   </div>`;
 }
 function teamBtns(mt){
@@ -481,21 +669,41 @@ function cupBracket(pre){
   </div>`;
 }
 function vLlaves(){
-  const P = plataSize(), E = plataCount();
+  const P = plataSize(), E = plataCount(), md = mode();
+  if (md==="gsolo"){
+    const done = allDone() && tiesReady();
+    return `<div class="sect oro">🏆 Campeones de grupo</div>
+      <div class="hint" style="margin-bottom:12px">En este formato no hay eliminatoria: el 1° de cada grupo es el campeón.</div>
+      <div class="groups">${Array.from({length:F().G},(_,gi)=>{ const st = standings(gi), c = st.done && !st.pend.length ? st.rows[0].id : null;
+        return `<div class="champ"><div class="t">🏆</div><div class="p" style="margin:0 0 6px">${esc(S.gn[gi])}</div>${c===null ? `<div class="p">A definir</div>` : `<div class="n">${esc(tname(c))}</div><div class="p">${esc(S.players[c])}</div>`}</div>`; }).join("")}</div>`;
+  }
+  if (md==="liga" && !S.lf){
+    const t = ligaTable(), c = t.done && !t.pend.length ? t.rows[0].id : null;
+    return `<div class="sect oro">🏆 Campeón de la liga</div>
+      <div class="groups"><div class="champ"><div class="t">🏆</div>${c===null ? `<div class="p">Se define cuando termina la liga</div>` : `<div class="n">${esc(tname(c))}</div><div class="p">${esc(S.players[c])}</div>`}</div></div>
+      <div class="hint" style="margin-top:12px">Sin final: gana el 1° de la tabla. Podés activar la final entre los 2 primeros en la pestaña Equipos.</div>`;
+  }
   return `
-  ${RO() ? "" : `<div class="bar"><span class="hint">Las llaves se completan solas cuando terminan los grupos (el mejor clasificado juega contra el peor, y se evita que se crucen dos del mismo grupo). Tocá al que ganó y pasa; tocá de nuevo para deshacer.</span></div>`}
-  ${allDone() && !tiesReady() ? `<div class="card" style="border-color:var(--amber);margin-bottom:14px">🎯 Falta cargar un desempate en la pestaña Grupos para armar las llaves.</div>` : ""}
+  ${RO() ? "" : `<div class="bar"><span class="hint">${md==="elim" ? "El cuadro sale del sorteo." : md==="liga" ? "La final se completa sola cuando termina la liga." : "Las llaves se completan solas cuando terminan los grupos (el mejor clasificado juega contra el peor, y se evita que se crucen dos del mismo grupo)."} Tocá al que ganó y pasa; tocá de nuevo para deshacer.</span></div>`}
+  ${allDone() && !tiesReady() ? `<div class="card" style="border-color:var(--amber);margin-bottom:14px">🎯 Falta cargar un desempate en la pestaña ${md==="liga"?"Tabla":"Grupos"} para armar las llaves.</div>` : ""}
   <div class="sect oro">🏆 Copa de Oro</div>
   ${cupBracket("r")}
   ${P ? `<div class="sect pl" style="margin-top:28px">🥈 Copa de Plata</div>
-    <div class="hint" style="margin-bottom:10px">La juegan los ${E} equipos que quedaron afuera en los grupos.${P>E ? ` Los ${P-E} mejores ubicados pasan directo a la segunda ronda.` : ""}</div>
+    <div class="hint" style="margin-bottom:10px">La juegan los ${E} equipos que ${md==="elim" ? "perdieron su primer partido" : "quedaron afuera en los grupos"}.${P>E ? ` ${P-E===1 ? "El" : "Los " + (P-E)} ${md==="elim" ? (P-E===1?"primero en perder":"primeros en perder") : (P-E===1?"mejor ubicado":"mejores ubicados")} ${P-E===1?"pasa":"pasan"} directo a la segunda ronda.` : ""}</div>
     ${cupBracket("p")}` : ""}
   ${RO() ? "" : `<div class="bar" style="margin-top:28px"><button class="btn ghost" data-act="reset">Reiniciar torneo</button></div>`}`;
 }
 function vEquipos(){
   const dis = RO() ? "disabled" : "", f = F(), t = formatText(f);
   const teamOpts = sel => Array.from({length:S.n},(_,id)=>`<option value="${id}" ${id===sel?"selected":""}>${esc(tname(id))}</option>`).join("");
+  const md = mode();
   return `
+  <div class="card" style="margin-bottom:18px;border-color:var(--orange)">
+    <div class="gtitle">Tipo de torneo</div>
+    ${RO() ? `<div style="font-size:16px;font-weight:800;margin:8px 0">${MODES[md].lbl}</div>` : `<div style="display:grid;gap:8px;grid-template-columns:repeat(auto-fill,minmax(250px,1fr));margin:10px 0">
+      ${Object.entries(MODES).map(([k,v])=>`<div class="tm click ${k===md?"win":""}" data-mode="${k}" style="white-space:normal;padding:12px"><div style="font-size:15px">${k===md?"✓ ":""}${v.lbl}</div><div class="hint" style="font-weight:400;margin-top:4px;text-decoration:none">${v.desc}</div></div>`).join("")}
+    </div>`}
+  </div>
   <div class="card" style="margin-bottom:18px;border-color:var(--orange)">
     <div class="gtitle">Cantidad de equipos</div>
     ${RO() ? "" : `<div class="bar" style="margin:10px 0">
@@ -503,14 +711,16 @@ function vEquipos(){
       <span style="font-family:Anton,sans-serif;font-size:36px;min-width:50px;text-align:center">${S.n}</span>
       <button class="btn ghost" data-act="nplus" style="font-size:20px;padding:6px 16px">+</button>
       <span class="hint">de ${MIN} a ${MAX}</span></div>`}
-    <div style="font-size:15px;line-height:1.6">${RO() ? `<b>${S.n} equipos</b> · ` : ""}${t.gs}, todos contra todos (${t.pj} partidos cada uno). Pasan ${t.pasan} a ${t.ronda} de la Copa de Oro. ${t.plata}</div>
-    ${RO() || S.n - f.K < 2 ? "" : `<label style="display:flex;gap:10px;align-items:center;margin-top:12px;font-weight:700;cursor:pointer">
+    <div style="font-size:15px;line-height:1.6">${RO() ? `<b>${S.n} equipos</b> · ` : ""}${t.summary}</div>
+    ${RO() || md!=="liga" ? "" : `<label style="display:flex;gap:10px;align-items:center;margin-top:12px;font-weight:700;cursor:pointer">
+      <input type="checkbox" data-lf-toggle ${S.lf?"checked":""} style="width:20px;height:20px;accent-color:var(--orange)"> Final entre el 1° y el 2° al terminar la liga</label>`}
+    ${RO() || plataCount() < 2 ? "" : `<label style="display:flex;gap:10px;align-items:center;margin-top:12px;font-weight:700;cursor:pointer">
       <input type="checkbox" data-pl-toggle ${S.pl?"checked":""} style="width:20px;height:20px;accent-color:var(--orange)"> Jugar Copa de Plata con los que quedan afuera</label>`}
   </div>
   ${RO() ? "" : `<div class="bar">
-    <button class="btn" data-act="sorteo">🎲 ${S.g ? "Re-sortear grupos" : "Sortear grupos"}</button>
-    <span class="hint">Podés sortear o elegir a mano qué equipo va en cada lugar. Si elegís uno que ya estaba en otro lugar, se intercambian.</span></div>`}
-  ${S.g ? `<div class="teams" style="margin-bottom:22px">
+    <button class="btn" data-act="sorteo">🎲 ${S.g ? "Re-sortear" : "Sortear"} ${hasGroups() ? "grupos" : md==="liga" ? "fixture" : "cuadro"}</button>
+    <span class="hint">${hasGroups() ? "Podés sortear o elegir a mano qué equipo va en cada lugar. Si elegís uno que ya estaba en otro lugar, se intercambian." : "El sorteo define el orden de los partidos."}</span></div>`}
+  ${S.g && hasGroups() ? `<div class="teams" style="margin-bottom:22px">
     ${Array.from({length:f.G},(_,gi)=>`<div class="card">
       <input class="f big" data-gn="${gi}" value="${esc(S.gn[gi])}" maxlength="24" ${dis}>
       ${groupIds(gi).map((id,i)=>`<div class="row"><div class="num">${LETTERS[gi]}${i+1}</div>
@@ -525,23 +735,27 @@ function vEquipos(){
     </div>`).join("")}
   </div>`;
 }
-function vReglas(){
-  const f = F(), t = formatText(f), ord = ["primeros","segundos","terceros","cuartos"];
-  return `<div class="rules">
-    <div class="card"><h4>Formato</h4>
-      <p>• ${S.n} equipos en ${t.gs}. Todos contra todos en el grupo: <b>${t.pj} partidos cada uno</b>.</p>
-      <p>• Pasan ${t.pasan} a <span class="y">${t.ronda}</span> de la Copa de Oro.${f.K>2 ? " Después eliminación directa hasta la final." : ""}</p>
-      ${t.plata ? `<p>• <b>Copa de Plata:</b> los que quedan afuera en los grupos juegan su propia eliminación directa, así todos juegan más.</p>` : ""}
-    </div>
-    <div class="card" style="grid-column:1/-1;border-color:var(--orange)"><h4>Cómo se clasifica</h4>
+function classCard(f, ord){
+  return `    <div class="card" style="grid-column:1/-1;border-color:var(--orange)"><h4>Cómo se clasifica</h4>
       <p>Partido ganado = <b>1 punto</b> · Partido perdido = <b>0 puntos</b>. Si dos o más equipos terminan igualados, se desempata en este orden:</p>
       <div class="steps">
         <div><span>1</span><p><b>Puntos.</b> Queda arriba el que tiene más puntos.</p></div>
-        <div><span>2</span><p><b>Partido entre ellos.</b> Si empatan 2 equipos, queda arriba el que le ganó al otro en el grupo.</p></div>
+        <div><span>2</span><p><b>Partido entre ellos.</b> Si empatan 2 equipos, queda arriba el que le ganó al otro.</p></div>
         <div><span>3</span><p><b>Desempate en la mesa.</b> Si empatan 3 o más equipos, se pone <span class="y">un vaso por equipo</span> y tira <span class="y">un representante de cada equipo</span>, por turnos. <b>El primero que mete, queda arriba.</b> Los que quedan vuelven a tirar para definir el resto.</p></div>
       </div>
       ${f.extraQ ? `<p style="margin-top:6px">• <b>Mejores ${ord[f.direct]}:</b> se comparan por % de partidos ganados. Si empatan, se define por <span class="y">sorteo</span>.</p>` : ""}
+    </div>`;
+}
+function vReglas(){
+  const f = F(), t = formatText(f), ord = ["primeros","segundos","terceros","cuartos"];
+  const elimCard = `<div class="card" style="grid-column:1/-1;border-color:var(--orange)"><h4>Cómo se avanza</h4><p>Eliminación directa: el que gana pasa, el que pierde queda afuera${S.pl && plataCount()>=2 ? " de la Copa de Oro y juega la Copa de Plata" : ""}.</p></div>`;
+  return `<div class="rules">
+    <div class="card"><h4>Formato</h4>
+      <p>• <b>${MODES[mode()].lbl}</b> con ${S.n} equipos.</p>
+      <p>• ${t.summary}</p>
+      ${t.plata ? `<p>• <b>Copa de Plata:</b> los que quedan afuera juegan su propia eliminación directa, así todos juegan más.</p>` : ""}
     </div>
+    ${mode()==="elim" ? elimCard : classCard(f, ord)}
     <div class="card"><h4>Bebidas y equipos</h4>
       <p>• Se juega con 2 cervezas con alcohol por equipo.</p>
       <p>• Una pelota por jugador (equipo de 3, tres pelotas por mesa).</p></div>
@@ -569,13 +783,14 @@ let lastT = 0, liveState = "", pubTimer = null;
 const hhmm = t => new Date(t).toLocaleTimeString("es-AR",{hour:"2-digit",minute:"2-digit"});
 function save(){
   if (!isAdmin) return;
+  ensureSwiss();
   fillTables();
   try { localStorage.setItem(KEY, JSON.stringify(S)); } catch(e){}
   if (LIVE){ clearTimeout(pubTimer); pubTimer = setTimeout(publish, 400); }
 }
 function pack(){
   const n = S.n;
-  return JSON.stringify({v:4, t:Date.now(), n, nm:S.names.slice(0,n), p:S.players.slice(0,n), gn:S.gn.slice(0,formatFor(n).G), g:S.g, r:S.r, k:S.k, d:S.d, m:S.m, pl:S.pl, tb:S.tb.slice(0,n)});
+  return JSON.stringify({v:4, t:Date.now(), n, nm:S.names.slice(0,n), p:S.players.slice(0,n), gn:S.gn.slice(0,formatFor(n).G), g:S.g, r:S.r, k:S.k, d:S.d, m:S.m, pl:S.pl, mo:mode(), lf:!!S.lf, sw:S.sw||[], sr:S.sr||3, tb:S.tb.slice(0,n)});
 }
 function unpack(str){
   let d; try { d = JSON.parse(str); } catch(e){ return null; }
@@ -588,16 +803,19 @@ function unpack(str){
   const r = {}, k = {}, dd = {};
   if (d.r && typeof d.r==="object") for (const [key,val] of Object.entries(d.r)) if (/^\d{1,2}-\d{1,2}$/.test(key) && id(val)) r[key]=val;
   if (d.k && typeof d.k==="object") for (const [key,val] of Object.entries(d.k)) if (/^[rp][0-4]m\d{1,2}$/.test(key) && id(val)) k[key]=val;
-  if (d.d && typeof d.d==="object") for (const [key,val] of Object.entries(d.d)) if (/^g[0-5]:\d$/.test(key) && Array.isArray(val) && val.length<=5 && val.every(id) && new Set(val).size===val.length) dd[key]=val;
+  if (d.d && typeof d.d==="object") for (const [key,val] of Object.entries(d.d)) if (/^(g[0-5]|L):\d{1,2}$/.test(key) && Array.isArray(val) && val.length<=MAX && val.every(id) && new Set(val).size===val.length) dd[key]=val;
   let m = freshTables();
   if (Array.isArray(d.m) && d.m.length>=1 && d.m.length<=MAXT) m = d.m.map(t=>({ hold: !!(t&&t.hold), match: (t && typeof t.match==="string" && /^(g:\d{1,2}-\d{1,2}|k:[rp][0-4]m\d{1,2})$/.test(t.match)) ? t.match : null }));
   const pad = (a, fill) => a.concat(Array(MAX - a.length).fill(fill));
   const gn = d.gn.concat(LETTERS.slice(G).map(l=>"Grupo "+l));
-  return { t:d.t, n, names:pad(d.nm,""), players:pad(d.p,""), gn, g:d.g, r, k, d:dd, m, pl: d.pl!==false, tb:pad(d.tb,0) };
+  const mo = MODES[d.mo] ? d.mo : "grupos";
+  let sw = [];
+  if (Array.isArray(d.sw) && d.sw.length<=8) sw = d.sw.filter(rd=>rd && Array.isArray(rd.p) && rd.p.every(pr=>Array.isArray(pr) && pr.length===2 && pr.every(id))).map(rd=>({p:rd.p, b: id(rd.b) ? rd.b : null}));
+  return { t:d.t, n, names:pad(d.nm,""), players:pad(d.p,""), gn, g:d.g, r, k, d:dd, m, pl: d.pl!==false, mo, lf: !!d.lf, sw, sr: Number.isInteger(d.sr) ? d.sr : 3, tb:pad(d.tb,0) };
 }
 function apply(d){
   lastT = d.t;
-  S = { n:d.n, names:d.names, players:d.players, gn:d.gn, g:d.g, r:d.r, k:d.k, d:d.d, m:d.m, pl:d.pl, tb:d.tb };
+  S = { n:d.n, names:d.names, players:d.players, gn:d.gn, g:d.g, r:d.r, k:d.k, d:d.d, m:d.m, pl:d.pl, mode:d.mo, lf:d.lf, sw:d.sw, sr:d.sr, tb:d.tb };
   liveState = "Última actualización: " + hhmm(d.t);
   banner(); render();
 }
@@ -648,12 +866,12 @@ function confirmBox(msg, ok){
   document.getElementById("mNo").onclick = ()=> m.innerHTML="";
   document.getElementById("mYes").onclick = ()=>{ m.innerHTML=""; ok(); };
 }
-function clearTournament(){ S.g = null; S.r = {}; S.k = {}; S.d = {}; S.m = freshTables(tables().length); }
+function clearTournament(){ S.g = null; S.r = {}; S.k = {}; S.d = {}; S.sw = []; S.m = freshTables(tables().length); }
 function doSorteo(){
   const ids = Array.from({length:S.n},(_,i)=>i);
   for (let i=ids.length-1;i>0;i--){ const j=Math.floor(Math.random()*(i+1)); [ids[i],ids[j]]=[ids[j],ids[i]]; }
   clearTournament(); S.g = ids; S.tb = randTb();
-  save(); go("grupos");
+  save(); go(mode()==="elim" ? "llaves" : "grupos");
 }
 function setN(n){
   n = Math.max(MIN, Math.min(MAX, n)); if (n===S.n) return;
@@ -687,6 +905,11 @@ document.getElementById("app").addEventListener("click", e=>{
   if (dk){ const key = dk.dataset.dk, id = +dk.dataset.id; S.d = S.d || {}; const cur = (S.d[key]||[]).slice(); if (!cur.includes(id)) cur.push(id); S.d[key] = cur; save(); render(); return; }
   const dr = e.target.closest("[data-dkr]");
   if (dr){ S.d = S.d || {}; delete S.d[dr.dataset.dkr]; save(); render(); return; }
+  const mo = e.target.closest("[data-mode]");
+  if (mo){ const v = mo.dataset.mode; if (v===mode()) return;
+    const doIt = ()=>{ S.mode = v; clearTournament(); save(); render(); };
+    if (S.g) confirmBox("Cambiar el tipo de torneo borra el sorteo y los resultados actuales (los nombres y jugadores quedan). ¿Seguro?", doIt); else doIt();
+    return; }
   const r = e.target.closest("[data-res]");
   if (r){ const key = r.dataset.res, id = +r.dataset.id; if (S.r[key]===id) delete S.r[key]; else S.r[key]=id; save(); render(); return; }
   const k = e.target.closest("[data-ko]");
@@ -696,6 +919,7 @@ document.getElementById("app").addEventListener("change", e=>{
   if (RO()) return;
   const t = e.target;
   if (t.dataset.name!==undefined){ S.names[+t.dataset.name] = t.value.slice(0,28); save(); render(); return; }
+  if (t.dataset.lfToggle!==undefined){ S.lf = t.checked; S.k = {}; save(); render(); return; }
   if (t.dataset.plToggle!==undefined){ S.pl = t.checked; save(); render(); return; }
   if (t.dataset.pl!==undefined){ S.players[+t.dataset.pl] = t.value.slice(0,70); save(); return; }
   if (t.dataset.gn!==undefined){ S.gn[+t.dataset.gn] = t.value.slice(0,24) || ("Grupo " + LETTERS[+t.dataset.gn]); save(); render(); return; }
