@@ -169,7 +169,7 @@ function formatFor(n){
 const MODES = {
   grupos: { lbl:"Grupo + fase eliminatoria", desc:"Grupos de 3 a 5, todos contra todos, y los mejores pasan a la eliminación." },
   elim:   { lbl:"Sistema eliminatorio", desc:"Cuadro directo desde el principio. El que pierde, afuera (o a la Copa de Plata)." },
-  gsolo:  { lbl:"Fase de grupos (sin eliminatorias)", desc:"Grupos de 3 a 5, todos contra todos. El primero de cada grupo es el campeón del grupo; no hay cruces." },
+  gsolo:  { lbl:"Fase de grupos (sin eliminatorias)", desc:"Grupos de 3 a 5, todos contra todos. Solo los ganadores de grupo siguen: final (2 grupos), triangular (3) o semis (4)." },
   liga:   { lbl:"Liga (varias jornadas)", desc:"Una sola tabla: todos contra todos, fecha por fecha. Gana el que suma más (con final opcional entre los 2 primeros)." }
 };
 const roundName = size => ({2:"Final",4:"Semis",8:"Cuartos",16:"Octavos"})[size] || ("Ronda de " + size);
@@ -190,7 +190,7 @@ function freshTables(c=3){ return Array.from({length:c}, ()=>({hold:false, match
 function fresh(){
   return { n: 12, names: Array(MAX).fill(""), players: Array.from({length:MAX},(_,i)=>DEFAULT_TEAMS[i]||""),
            gn: LETTERS.map(l=>"Grupo "+l), g: null, r: {}, k: {}, d: {}, m: freshTables(), pl: true, tb: randTb(),
-           mode: "grupos", lf: false, sr: 3, sw: [] };
+           mode: "grupos", lf: false, sr: 3, sw: [], cd: false, v: {} };
 }
 let S = fresh();
 if (isAdmin){ try { const s = JSON.parse(localStorage.getItem(KEY)); if (s && s.players) S = Object.assign(fresh(), s); } catch(e){} }
@@ -200,11 +200,17 @@ const esc = s => String(s).replace(/[&<>"]/g, c=>({"&":"&amp;","<":"&lt;",">":"&
 const tname = id => (S.names[id]||"").trim() || ("Equipo " + (id+1));
 const okId = x => Number.isInteger(x) && x>=0 && x<S.n;
 const pkey = (a,b) => Math.min(a,b) + "-" + Math.max(a,b);
+const cupsOf = (a,b) => { const x = (S.v||{})[pkey(a,b)]; return Number.isInteger(x) ? x : 0; };   // vasos que le quedaron al ganador
+const useCD = () => !!S.cd && mode()!=="elim";
 const mode = () => MODES[S.mode] ? S.mode : "grupos";
 function F(){
   const m = mode(), n = S.n;
   if (m === "grupos") return Object.assign({mode:m}, formatFor(n));
-  if (m === "gsolo") return Object.assign({mode:m}, formatFor(n), {K:0, direct:0, extraQ:0});
+  if (m === "gsolo"){
+    const base = formatFor(n), G = base.G;
+    let K = 0; if (G === 2 || G >= 4){ K = 1; while (K < G) K *= 2; }   // 2 → final, 4 → semis, 5-6 → cuartos con pases directos; 3 → triangular
+    return Object.assign({mode:m}, base, {K, direct:0, extraQ:0, tri: G === 3});
+  }
   let K;
   if (m === "elim"){ K = 1; while (K < n) K *= 2; }                       // cuadro con pases directos si no da justo
   else if (m === "liga") K = S.lf ? 2 : 0;                               // final entre los 2 primeros (opcional)
@@ -231,7 +237,7 @@ const fixtureOf = gi => FIX[F().sizes[gi]];
 // ===== tablas =====
 function standings(gi){
   const ids = groupIds(gi), fx = fixtureOf(gi);
-  const rows = ids.map(id=>({id, gi, pj:0, pg:0, pp:0, pts:0}));
+  const rows = ids.map(id=>({id, gi, pj:0, pg:0, pp:0, pts:0, dif:0}));
   const by = Object.fromEntries(rows.map(r=>[r.id,r]));
   let played = 0, total = 0;
   for (const f of fx) for (const [i,j] of f){
@@ -240,7 +246,7 @@ function standings(gi){
     if (w!==a && w!==b) continue;
     played++;
     const W = by[w], L = by[w===a?b:a];
-    W.pj++; L.pj++; W.pg++; W.pts++; L.pp++;
+    W.pj++; L.pj++; W.pg++; W.pts++; L.pp++; const x = cupsOf(a,b); W.dif += x; L.dif -= x;
   }
   const rk = rank(rows, "g"+gi, true, false);
   return { rows: rk.rows, pend: rk.pend, done: played===total };
@@ -249,6 +255,15 @@ function standings(gi){
 // Entre grupos distintos (mejores segundos/terceros): % de partidos ganados y, si empatan, sorteo
 function rank(rows, key, h2h, auto){
   const val = r => auto ? (r.pj ? r.pts/r.pj : 0) : r.pts;
+  if (useCD()){
+    // 1) puntos · 2) diferencia de vasos · 3) si empatan 2, partido entre ellos · 4) sorteo
+    rows.sort((x,y)=> (val(y)-val(x)) || (y.dif-x.dif) || (S.tb[y.id]-S.tb[x.id]));
+    for (let i=0;i<rows.length-1;i++){
+      const x = rows[i], y = rows[i+1], same = r => val(r)===val(x) && r.dif===x.dif;
+      if (h2h && same(y) && (i===0 || !same(rows[i-1])) && (i+2>=rows.length || !same(rows[i+2])) && S.r[pkey(x.id,y.id)]===y.id){ rows[i]=y; rows[i+1]=x; i++; }
+    }
+    return { rows, pend: [] };
+  }
   rows.sort((x,y)=> (val(y)-val(x)) || (S.tb[y.id]-S.tb[x.id]));
   const out = [], pend = [];
   let i = 0;
@@ -285,26 +300,26 @@ function tiesReady(){
 // ----- liga -----
 function ligaMatches(){ return S.g ? roundRobin(S.g) : []; }
 function ligaTable(){
-  const rows = (S.g||[]).map(id=>({id, gi:-1, pj:0, pg:0, pp:0, pts:0}));
+  const rows = (S.g||[]).map(id=>({id, gi:-1, pj:0, pg:0, pp:0, pts:0, dif:0}));
   const by = Object.fromEntries(rows.map(r=>[r.id,r]));
   let played = 0, total = 0;
   for (const f of ligaMatches()) for (const [a,b] of f){
     total++; const w = S.r[pkey(a,b)]; if (w!==a && w!==b) continue; played++;
-    const W = by[w], L = by[w===a?b:a]; W.pj++; L.pj++; W.pg++; W.pts++; L.pp++;
+    const W = by[w], L = by[w===a?b:a]; W.pj++; L.pj++; W.pg++; W.pts++; L.pp++; const x = cupsOf(a,b); W.dif += x; L.dif -= x;
   }
   const rk = rank(rows, "L", true, false);
   return { rows: rk.rows, pend: rk.pend, done: total>0 && played===total };
 }
 // ----- suizo -----
 function swissTable(){
-  const rows = (S.g||[]).map(id=>({id, gi:-1, pj:0, pg:0, pp:0, pts:0, bye:0, opp:[]}));
+  const rows = (S.g||[]).map(id=>({id, gi:-1, pj:0, pg:0, pp:0, pts:0, dif:0, bye:0, opp:[]}));
   const by = Object.fromEntries(rows.map(r=>[r.id,r]));
   for (const rd of (S.sw||[])){
     if (rd.b!==null && by[rd.b]){ by[rd.b].pts++; by[rd.b].bye++; }
     for (const [a,b] of rd.p){
       by[a].opp.push(b); by[b].opp.push(a);
       const w = S.r[pkey(a,b)]; if (w!==a && w!==b) continue;
-      const W = by[w], L = by[w===a?b:a]; W.pj++; L.pj++; W.pg++; W.pts++; L.pp++;
+      const W = by[w], L = by[w===a?b:a]; W.pj++; L.pj++; W.pg++; W.pts++; L.pp++; const x = cupsOf(a,b); W.dif += x; L.dif -= x;
     }
   }
   rows.forEach(r=>{ r.buch = r.opp.reduce((s,o)=>s + by[o].pts, 0); });
@@ -346,12 +361,28 @@ function ensureSwiss(){
 }
 function tierRank(p){ return rank(Array.from({length:F().G},(_,gi)=>standings(gi).rows[p]).filter(Boolean), "t", false, true).rows; }
 
+// ----- triangular (fase de grupos con 3 ganadores) -----
+function triTeams(){ return mode()==="gsolo" && F().tri && tiesReady() ? tierRank(0).map(r=>r.id) : null; }
+function triTable(){
+  const ids = triTeams(); if (!ids) return null;
+  const rows = ids.map(id=>({id, gi:-1, pj:0, pg:0, pp:0, pts:0, dif:0}));
+  const by = Object.fromEntries(rows.map(r=>[r.id,r]));
+  let played = 0;
+  for (const [a,b] of [[ids[0],ids[1]],[ids[0],ids[2]],[ids[1],ids[2]]]){
+    const w = S.r[pkey(a,b)]; if (w!==a && w!==b) continue; played++;
+    const W = by[w], L = by[w===a?b:a]; W.pj++; L.pj++; W.pg++; W.pts++; L.pp++; const x = cupsOf(a,b); W.dif += x; L.dif -= x;
+  }
+  const rk = rank(rows, "T", true, false);
+  return { rows: rk.rows, pend: rk.pend, done: played===3 };
+}
+function triChampion(){ const t = triTable(); return t && t.done && !t.pend.length ? t.rows[0].id : null; }
+
 // ===== llaves =====
 function bracketOrder(K){ let o = [1]; while (o.length < K){ const m = o.length*2+1; o = o.flatMap(s=>[s, m-s]); } return o; }
 function seeds(){
   if (!tiesReady()) return null;
   const m = mode();
-  if (m==="gsolo") return null;
+  if (m==="gsolo") return F().K ? tierRank(0).slice(0, F().G) : null;
   if (m==="elim") return S.g.map(id=>({id}));
   if (m==="liga") return S.lf ? ligaTable().rows.slice(0,2) : null;
   if (m==="suizo") return swissTable().slice(0, F().K);
@@ -441,6 +472,8 @@ function allMatches(){
     const ids = groupIds(gi);
     for (const [i,j] of fx[fi]) out.push({ id:"g:"+pkey(ids[i],ids[j]), teams:[ids[i],ids[j]], lbl: S.gn[gi] + " · Fecha " + (fi+1), kind:"g", key:pkey(ids[i],ids[j]) });
   }
+  const tri = triTeams();
+  if (tri) [[tri[0],tri[1]],[tri[0],tri[2]],[tri[1],tri[2]]].forEach(([a,b])=>add(a,b,"Triangular"));
   const ko = [...koList("r"), ...koList("p")].sort((a,b)=> parseKey(a).ri - parseKey(b).ri);
   for (const m of ko){
     const sd = sides(m);
@@ -477,7 +510,8 @@ function totalMatches(){
   if (m==="liga") return S.n*(S.n-1)/2 + (S.lf ? 1 : 0);
   if (m==="elim") return S.n - 1 + pl;
   const g = f.sizes.reduce((a,x)=>a + x*(x-1)/2, 0);
-  return g + (m==="grupos" ? f.K - 1 + pl : 0);
+  if (m==="gsolo") return g + (f.tri ? 3 : f.K ? f.G - 1 : 0);
+  return g + (f.K - 1 + pl);
 }
 function formatText(f){
   const m = mode(), E = plataCount();
@@ -492,7 +526,10 @@ function formatText(f){
   }
   const gs = f.G===1 ? `1 grupo de ${f.sizes[0]}` : `${f.G} grupos (${f.sizes.join(", ")} equipos)`;
   const pj = [...new Set(f.sizes.map(x=>x-1))].join(" o ");
-  if (m==="gsolo") return { summary: `${gs}, todos contra todos (${pj} partidos cada uno). No hay eliminatoria: el 1° de cada grupo es el campeón del grupo. ${total}`, plata:"", gs, pj };
+  if (m==="gsolo"){
+    const fin = f.G===1 ? "El 1° del grupo es el campeón." : f.G===2 ? "Los 2 ganadores de grupo juegan la final." : f.tri ? "Los 3 ganadores de grupo juegan un triangular (todos contra todos) y el que suma más es el campeón." : f.G===4 ? "Los 4 ganadores de grupo juegan semis y final." : `Los ${f.G} ganadores de grupo juegan cuartos; los ${f.K-f.G} mejores pasan directo a semis.`;
+    return { summary: `${gs}, todos contra todos (${pj} partidos cada uno). Solo pasa el 1° de cada grupo. ${fin} ${total}`, plata:"", gs, pj };
+  }
   const ord = ["primeros","segundos","terceros","cuartos"];
   let pasan = f.direct===1 ? "el 1° de cada grupo" : `los ${f.direct} primeros de cada grupo`;
   if (f.extraQ) pasan += ` y ${f.extraQ===1 ? "el mejor" : "los " + f.extraQ + " mejores"} ${ord[f.direct]}`;
@@ -527,9 +564,9 @@ function vGrupos(){
     const ids = groupIds(gi), st = standings(gi);
     return `<div class="card">
       <div class="gtitle">${esc(S.gn[gi])} <small>${st.done ? "✅ terminado" : "en juego"}</small></div>
-      <table class="tbl"><colgroup><col style="width:30px"><col><col style="width:34px"><col style="width:34px"><col style="width:34px"><col style="width:40px"></colgroup>
-        <tr><th>#</th><th class="tn">Equipo</th><th>PJ</th><th>PG</th><th>PP</th><th>Pts</th></tr>
-        ${st.rows.map((r,i)=>`<tr class="${zone(i)}"><td class="pos">${i+1}</td><td class="tn" title="${esc(S.players[r.id])}">${esc(tname(r.id))}</td><td>${r.pj}</td><td>${r.pg}</td><td>${r.pp}</td><td class="pts">${r.pts}</td></tr>`).join("")}
+      <table class="tbl"><colgroup><col style="width:30px"><col><col style="width:34px"><col style="width:34px"><col style="width:34px">${useCD() ? `<col style="width:42px">` : ""}<col style="width:40px"></colgroup>
+        <tr><th>#</th><th class="tn">Equipo</th><th>PJ</th><th>PG</th><th>PP</th>${useCD()?"<th>Dif</th>":""}<th>Pts</th></tr>
+        ${st.rows.map((r,i)=>`<tr class="${zone(i)}"><td class="pos">${i+1}</td><td class="tn" title="${esc(S.players[r.id])}">${esc(tname(r.id))}</td><td>${r.pj}</td><td>${r.pg}</td><td>${r.pp}</td>${useCD()?`<td>${r.dif>0?"+":""}${r.dif}</td>`:""}<td class="pts">${r.pts}</td></tr>`).join("")}
       </table>
       ${st.pend.map(p=>pendBox(p, st.done)).join("")}
       ${fixtureOf(gi).map((fx,fi)=>`<div class="fecha">Fecha ${fi+1}</div>` + fx.map(([i,j])=>{
@@ -537,24 +574,24 @@ function vGrupos(){
         const cl = id => (w===a||w===b) ? (w===id ? "win" : "lose") : "";
         const clk = id => RO() ? "" : `data-res="${pkey(a,b)}" data-id="${id}"`;
         return `<div class="match">
-          <div class="tm ${cl(a)} ${RO()?"":"click"}" ${clk(a)} title="${esc(S.players[a])}">${w===a?"✓ ":""}${esc(tname(a))}</div>
+          <div class="tm ${cl(a)} ${RO()?"":"click"}" ${clk(a)} title="${esc(S.players[a])}">${w===a?"✓ ":""}${esc(tname(a))}${w===a&&useCD()?` (+${cupsOf(a,b)})`:""}</div>
           <div class="vs">VS</div>
-          <div class="tm r ${cl(b)} ${RO()?"":"click"}" ${clk(b)} title="${esc(S.players[b])}">${esc(tname(b))}${w===b?" ✓":""}</div>
+          <div class="tm r ${cl(b)} ${RO()?"":"click"}" ${clk(b)} title="${esc(S.players[b])}">${w===b&&useCD()?`(+${cupsOf(a,b)}) `:""}${esc(tname(b))}${w===b?" ✓":""}</div>
         </div>`;
       }).join("")).join("")}
     </div>`;
   }).join("")}
   ${f.extraQ ? `<div class="card">
       <div class="gtitle">Mejores ${ord[f.direct]} <small>${tier ? "✅ definido" : "se define al final"}</small></div>
-      <table class="tbl"><colgroup><col style="width:30px"><col><col style="width:44px"><col style="width:40px"><col style="width:50px"></colgroup>
-        <tr><th>#</th><th class="tn">Equipo</th><th>Grupo</th><th>Pts</th><th>% PG</th></tr>
-        ${tierLive.map((r,i)=>`<tr class="${i<f.extraQ?"z-oro":"z-plata"}"><td class="pos">${i+1}</td><td class="tn">${esc(tname(r.id))}</td><td>${LETTERS[r.gi]}</td><td class="pts">${r.pts}</td><td>${r.pj?Math.round(100*r.pts/r.pj):0}%</td></tr>`).join("")}
+      <table class="tbl"><colgroup><col style="width:30px"><col><col style="width:44px"><col style="width:40px"><col style="width:50px">${useCD()?`<col style="width:42px">`:""}</colgroup>
+        <tr><th>#</th><th class="tn">Equipo</th><th>Grupo</th><th>Pts</th><th>% PG</th>${useCD()?"<th>Dif</th>":""}</tr>
+        ${tierLive.map((r,i)=>`<tr class="${i<f.extraQ?"z-oro":"z-plata"}"><td class="pos">${i+1}</td><td class="tn">${esc(tname(r.id))}</td><td>${LETTERS[r.gi]}</td><td class="pts">${r.pts}</td><td>${r.pj?Math.round(100*r.pts/r.pj):0}%</td>${useCD()?`<td>${r.dif>0?"+":""}${r.dif}</td>`:""}</tr>`).join("")}
       </table>
       <div class="hint">Pasan ${f.extraQ===1?"el mejor":"los "+f.extraQ+" mejores"}. Se comparan por % de partidos ganados (por si los grupos son de distinto tamaño). Si empatan, sorteo.</div>
     </div>` : ""}
   </div>
   <div class="legend">
-    ${md==="gsolo" ? `<span><i style="background:var(--green)"></i>Campeón del grupo</span>` : `<span><i style="background:var(--green)"></i>Pasan a ${f.K===2?"la final":roundName(f.K).toLowerCase()}</span>
+    ${md==="gsolo" ? `<span><i style="background:var(--green)"></i>${f.G===1 ? "Campeón" : f.tri ? "Juega el triangular" : f.G===2 ? "Juega la final" : "Pasa a la definición"}</span>` : `<span><i style="background:var(--green)"></i>Pasan a ${f.K===2?"la final":roundName(f.K).toLowerCase()}</span>
     ${f.extraQ ? `<span><i style="background:var(--amber)"></i>Depende de la tabla de mejores ${ord[f.direct]}</span>` : ""}
     <span><i style="background:var(--silver)"></i>Quedan afuera</span>`}
     <span>PJ jugados · PG ganados · PP perdidos · Pts 1 por victoria</span>
@@ -565,9 +602,9 @@ function matchRow(a,b){
   const cl = id => (w===a||w===b) ? (w===id ? "win" : "lose") : "";
   const clk = id => RO() ? "" : `data-res="${pkey(a,b)}" data-id="${id}"`;
   return `<div class="match">
-    <div class="tm ${cl(a)} ${RO()?"":"click"}" ${clk(a)} title="${esc(S.players[a])}">${w===a?"✓ ":""}${esc(tname(a))}</div>
+    <div class="tm ${cl(a)} ${RO()?"":"click"}" ${clk(a)} title="${esc(S.players[a])}">${w===a?"✓ ":""}${esc(tname(a))}${w===a&&useCD()?` (+${cupsOf(a,b)})`:""}</div>
     <div class="vs">VS</div>
-    <div class="tm r ${cl(b)} ${RO()?"":"click"}" ${clk(b)} title="${esc(S.players[b])}">${esc(tname(b))}${w===b?" ✓":""}</div></div>`;
+    <div class="tm r ${cl(b)} ${RO()?"":"click"}" ${clk(b)} title="${esc(S.players[b])}">${w===b&&useCD()?`(+${cupsOf(a,b)}) `:""}${esc(tname(b))}${w===b?" ✓":""}</div></div>`;
 }
 function vLiga(){
   if (!S.g) return `<div class="empty">Todavía no se sorteó el fixture.<br><br>${RO() ? "Cuando se sortee, aparece acá solo. 🍺" : `<button class="btn" data-act="sorteo">🎲 Sortear fixture</button>`}</div>`;
@@ -580,9 +617,9 @@ function vLiga(){
   <div class="groups" style="grid-template-columns:repeat(auto-fill,minmax(380px,1fr))">
     <div class="card">
       <div class="gtitle">Tabla <small>${t.done ? "✅ terminada" : cur>=0 ? "Fecha " + (cur+1) + " de " + fx.length : ""}</small></div>
-      <table class="tbl"><colgroup><col style="width:30px"><col><col style="width:34px"><col style="width:34px"><col style="width:34px"><col style="width:40px"></colgroup>
-        <tr><th>#</th><th class="tn">Equipo</th><th>PJ</th><th>PG</th><th>PP</th><th>Pts</th></tr>
-        ${t.rows.map((r,i)=>`<tr class="${z(i)}"><td class="pos">${i+1}</td><td class="tn" title="${esc(S.players[r.id])}">${esc(tname(r.id))}</td><td>${r.pj}</td><td>${r.pg}</td><td>${r.pp}</td><td class="pts">${r.pts}</td></tr>`).join("")}
+      <table class="tbl"><colgroup><col style="width:30px"><col><col style="width:34px"><col style="width:34px"><col style="width:34px">${useCD() ? `<col style="width:42px">` : ""}<col style="width:40px"></colgroup>
+        <tr><th>#</th><th class="tn">Equipo</th><th>PJ</th><th>PG</th><th>PP</th>${useCD()?"<th>Dif</th>":""}<th>Pts</th></tr>
+        ${t.rows.map((r,i)=>`<tr class="${z(i)}"><td class="pos">${i+1}</td><td class="tn" title="${esc(S.players[r.id])}">${esc(tname(r.id))}</td><td>${r.pj}</td><td>${r.pg}</td><td>${r.pp}</td>${useCD()?`<td>${r.dif>0?"+":""}${r.dif}</td>`:""}<td class="pts">${r.pts}</td></tr>`).join("")}
       </table>
       ${t.pend.map(p=>pendBox(p, t.done)).join("")}
       <div class="legend"><span><i style="background:var(--green)"></i>${S.lf ? "Juegan la final" : "Campeón"}</span><span>Pts 1 por victoria</span></div>
@@ -607,8 +644,8 @@ function teamBtns(mt){
   const attr = id => RO() ? "" : (mt.kind==="g" ? `data-res="${mt.key}" data-id="${id}"` : `data-ko="${mt.key}" data-id="${id}"`);
   const cl = id => done ? (w===id ? "win" : "lose") : "";
   const [a,b] = mt.teams;
-  return `<div class="match"><div class="tm ${cl(a)} ${RO()?"":"click"}" ${attr(a)} title="${esc(S.players[a])}">${w===a?"✓ ":""}${esc(tname(a))}</div><div class="vs">VS</div>
-    <div class="tm r ${cl(b)} ${RO()?"":"click"}" ${attr(b)} title="${esc(S.players[b])}">${esc(tname(b))}${w===b?" ✓":""}</div></div>`;
+  return `<div class="match"><div class="tm ${cl(a)} ${RO()?"":"click"}" ${attr(a)} title="${esc(S.players[a])}">${w===a?"✓ ":""}${esc(tname(a))}${w===a&&useCD()?` (+${cupsOf(a,b)})`:""}</div><div class="vs">VS</div>
+    <div class="tm r ${cl(b)} ${RO()?"":"click"}" ${attr(b)} title="${esc(S.players[b])}">${w===b&&useCD()?`(+${cupsOf(a,b)}) `:""}${esc(tname(b))}${w===b?" ✓":""}</div></div>`;
 }
 function vMesas(){
   if (!S.g) return `<div class="empty">Las mesas se llenan solas cuando se sorteen los grupos.</div>`;
@@ -671,11 +708,32 @@ function cupBracket(pre){
 function vLlaves(){
   const P = plataSize(), E = plataCount(), md = mode();
   if (md==="gsolo"){
-    const done = allDone() && tiesReady();
-    return `<div class="sect oro">🏆 Campeones de grupo</div>
-      <div class="hint" style="margin-bottom:12px">En este formato no hay eliminatoria: el 1° de cada grupo es el campeón.</div>
-      <div class="groups">${Array.from({length:F().G},(_,gi)=>{ const st = standings(gi), c = st.done && !st.pend.length ? st.rows[0].id : null;
-        return `<div class="champ"><div class="t">🏆</div><div class="p" style="margin:0 0 6px">${esc(S.gn[gi])}</div>${c===null ? `<div class="p">A definir</div>` : `<div class="n">${esc(tname(c))}</div><div class="p">${esc(S.players[c])}</div>`}</div>`; }).join("")}</div>`;
+    const f = F();
+    if (f.G===1){
+      const st = standings(0), c = st.done && !st.pend.length ? st.rows[0].id : null;
+      return `<div class="sect oro">🏆 Campeón</div><div class="groups"><div class="champ"><div class="t">🏆</div>${c===null ? `<div class="p">Se define cuando termina el grupo</div>` : `<div class="n">${esc(tname(c))}</div><div class="p">${esc(S.players[c])}</div>`}</div></div>`;
+    }
+    if (f.tri){
+      const t = triTable(), c = triChampion();
+      if (!t) return `<div class="sect oro">🏆 Triangular</div><div class="card">Lo juegan los 3 ganadores de grupo, todos contra todos. Se arma solo cuando terminan los grupos${allDone() && !tiesReady() ? " (falta cargar un desempate en Grupos)" : ""}.</div>`;
+      const ids = t.rows.map(r=>r.id), base = triTeams();
+      return `<div class="sect oro">🏆 Triangular</div>
+      <div class="groups">
+        <div class="card"><div class="gtitle">Tabla <small>${t.done ? "✅ terminado" : "en juego"}</small></div>
+          <table class="tbl"><colgroup><col style="width:30px"><col><col style="width:34px"><col style="width:34px"><col style="width:34px">${useCD()?`<col style="width:42px">`:""}<col style="width:40px"></colgroup>
+            <tr><th>#</th><th class="tn">Equipo</th><th>PJ</th><th>PG</th><th>PP</th>${useCD()?"<th>Dif</th>":""}<th>Pts</th></tr>
+            ${t.rows.map((r,i)=>`<tr class="${i===0?"z-oro":""}"><td class="pos">${i+1}</td><td class="tn">${esc(tname(r.id))} <span class="hint">${seedLabel(r.id)}</span></td><td>${r.pj}</td><td>${r.pg}</td><td>${r.pp}</td>${useCD()?`<td>${r.dif>0?"+":""}${r.dif}</td>`:""}<td class="pts">${r.pts}</td></tr>`).join("")}
+          </table>
+          ${t.pend.map(p=>pendBox(p, t.done)).join("")}
+          <div class="fecha">Partidos</div>
+          ${[[base[0],base[1]],[base[0],base[2]],[base[1],base[2]]].map(([a,b])=>matchRow(a,b)).join("")}
+        </div>
+        <div class="col"><div class="ties">${c===null ? `<div class="champ"><div class="t">🏆</div><div class="p">A definir</div></div>` : `<div class="champ"><div class="t">🏆</div><div class="n">${esc(tname(c))}</div><div class="p">${esc(S.players[c])}</div></div>`}</div></div>
+      </div>`;
+    }
+    return `<div class="sect oro">🏆 Definición entre ganadores de grupo</div>
+      ${allDone() && !tiesReady() ? `<div class="card" style="border-color:var(--amber);margin-bottom:14px">🎯 Falta cargar un desempate en la pestaña Grupos.</div>` : ""}
+      ${cupBracket("r")}`;
   }
   if (md==="liga" && !S.lf){
     const t = ligaTable(), c = t.done && !t.pend.length ? t.rows[0].id : null;
@@ -714,6 +772,8 @@ function vEquipos(){
     <div style="font-size:15px;line-height:1.6">${RO() ? `<b>${S.n} equipos</b> · ` : ""}${t.summary}</div>
     ${RO() || md!=="liga" ? "" : `<label style="display:flex;gap:10px;align-items:center;margin-top:12px;font-weight:700;cursor:pointer">
       <input type="checkbox" data-lf-toggle ${S.lf?"checked":""} style="width:20px;height:20px;accent-color:var(--orange)"> Final entre el 1° y el 2° al terminar la liga</label>`}
+    ${RO() || md==="elim" ? "" : `<label style="display:flex;gap:10px;align-items:center;margin-top:12px;font-weight:700;cursor:pointer">
+      <input type="checkbox" data-cd-toggle ${S.cd?"checked":""} style="width:20px;height:20px;accent-color:var(--orange)"> Desempatar por diferencia de vasos (al cargar cada ganador te pregunta cuántos vasos le quedaron)</label>`}
     ${RO() || plataCount() < 2 ? "" : `<label style="display:flex;gap:10px;align-items:center;margin-top:12px;font-weight:700;cursor:pointer">
       <input type="checkbox" data-pl-toggle ${S.pl?"checked":""} style="width:20px;height:20px;accent-color:var(--orange)"> Jugar Copa de Plata con los que quedan afuera</label>`}
   </div>
@@ -736,6 +796,16 @@ function vEquipos(){
   </div>`;
 }
 function classCard(f, ord){
+  if (useCD()) return `<div class="card" style="grid-column:1/-1;border-color:var(--orange)"><h4>Cómo se clasifica</h4>
+      <p>Partido ganado = <b>1 punto</b> · Partido perdido = <b>0 puntos</b>. Si dos o más equipos terminan igualados, se desempata en este orden:</p>
+      <div class="steps">
+        <div><span>1</span><p><b>Puntos.</b> Queda arriba el que tiene más puntos.</p></div>
+        <div><span>2</span><p><b>Diferencia de vasos.</b> En cada partido, los <span class="y">vasos que le quedan en pie al ganador</span> se le suman a él y se le restan al perdedor. Queda arriba el de mejor diferencia.</p></div>
+        <div><span>3</span><p><b>Partido entre ellos.</b> Si siguen empatados 2 equipos, queda arriba el que le ganó al otro.</p></div>
+        <div><span>4</span><p><b>Sorteo.</b> Si todavía siguen iguales, se define por sorteo.</p></div>
+      </div>
+      ${f.extraQ ? `<p style="margin-top:6px">• <b>Mejores ${ord[f.direct]}:</b> se comparan por % de partidos ganados, después por diferencia de vasos y, si siguen iguales, por <span class="y">sorteo</span>.</p>` : ""}
+    </div>`;
   return `    <div class="card" style="grid-column:1/-1;border-color:var(--orange)"><h4>Cómo se clasifica</h4>
       <p>Partido ganado = <b>1 punto</b> · Partido perdido = <b>0 puntos</b>. Si dos o más equipos terminan igualados, se desempata en este orden:</p>
       <div class="steps">
@@ -790,7 +860,7 @@ function save(){
 }
 function pack(){
   const n = S.n;
-  return JSON.stringify({v:4, t:Date.now(), n, nm:S.names.slice(0,n), p:S.players.slice(0,n), gn:S.gn.slice(0,formatFor(n).G), g:S.g, r:S.r, k:S.k, d:S.d, m:S.m, pl:S.pl, mo:mode(), lf:!!S.lf, sw:S.sw||[], sr:S.sr||3, tb:S.tb.slice(0,n)});
+  return JSON.stringify({v:4, t:Date.now(), n, nm:S.names.slice(0,n), p:S.players.slice(0,n), gn:S.gn.slice(0,formatFor(n).G), g:S.g, r:S.r, k:S.k, d:S.d, m:S.m, pl:S.pl, mo:mode(), lf:!!S.lf, cd:!!S.cd, cv:S.v||{}, sw:S.sw||[], sr:S.sr||3, tb:S.tb.slice(0,n)});
 }
 function unpack(str){
   let d; try { d = JSON.parse(str); } catch(e){ return null; }
@@ -803,19 +873,21 @@ function unpack(str){
   const r = {}, k = {}, dd = {};
   if (d.r && typeof d.r==="object") for (const [key,val] of Object.entries(d.r)) if (/^\d{1,2}-\d{1,2}$/.test(key) && id(val)) r[key]=val;
   if (d.k && typeof d.k==="object") for (const [key,val] of Object.entries(d.k)) if (/^[rp][0-4]m\d{1,2}$/.test(key) && id(val)) k[key]=val;
-  if (d.d && typeof d.d==="object") for (const [key,val] of Object.entries(d.d)) if (/^(g[0-5]|L):\d{1,2}$/.test(key) && Array.isArray(val) && val.length<=MAX && val.every(id) && new Set(val).size===val.length) dd[key]=val;
+  if (d.d && typeof d.d==="object") for (const [key,val] of Object.entries(d.d)) if (/^(g[0-5]|L|T):\d{1,2}$/.test(key) && Array.isArray(val) && val.length<=MAX && val.every(id) && new Set(val).size===val.length) dd[key]=val;
   let m = freshTables();
   if (Array.isArray(d.m) && d.m.length>=1 && d.m.length<=MAXT) m = d.m.map(t=>({ hold: !!(t&&t.hold), match: (t && typeof t.match==="string" && /^(g:\d{1,2}-\d{1,2}|k:[rp][0-4]m\d{1,2})$/.test(t.match)) ? t.match : null }));
   const pad = (a, fill) => a.concat(Array(MAX - a.length).fill(fill));
   const gn = d.gn.concat(LETTERS.slice(G).map(l=>"Grupo "+l));
   const mo = MODES[d.mo] ? d.mo : "grupos";
+  const vv = {};
+  if (d.cv && typeof d.cv==="object") for (const [key,val] of Object.entries(d.cv)) if (/^\d{1,2}-\d{1,2}$/.test(key) && Number.isInteger(val) && val>=0 && val<=10) vv[key]=val;
   let sw = [];
   if (Array.isArray(d.sw) && d.sw.length<=8) sw = d.sw.filter(rd=>rd && Array.isArray(rd.p) && rd.p.every(pr=>Array.isArray(pr) && pr.length===2 && pr.every(id))).map(rd=>({p:rd.p, b: id(rd.b) ? rd.b : null}));
-  return { t:d.t, n, names:pad(d.nm,""), players:pad(d.p,""), gn, g:d.g, r, k, d:dd, m, pl: d.pl!==false, mo, lf: !!d.lf, sw, sr: Number.isInteger(d.sr) ? d.sr : 3, tb:pad(d.tb,0) };
+  return { t:d.t, n, names:pad(d.nm,""), players:pad(d.p,""), gn, g:d.g, r, k, d:dd, m, pl: d.pl!==false, mo, lf: !!d.lf, cd: !!d.cd, v: vv, sw, sr: Number.isInteger(d.sr) ? d.sr : 3, tb:pad(d.tb,0) };
 }
 function apply(d){
   lastT = d.t;
-  S = { n:d.n, names:d.names, players:d.players, gn:d.gn, g:d.g, r:d.r, k:d.k, d:d.d, m:d.m, pl:d.pl, mode:d.mo, lf:d.lf, sw:d.sw, sr:d.sr, tb:d.tb };
+  S = { n:d.n, names:d.names, players:d.players, gn:d.gn, g:d.g, r:d.r, k:d.k, d:d.d, m:d.m, pl:d.pl, mode:d.mo, lf:d.lf, cd:d.cd, v:d.v, sw:d.sw, sr:d.sr, tb:d.tb };
   liveState = "Última actualización: " + hhmm(d.t);
   banner(); render();
 }
@@ -866,7 +938,15 @@ function confirmBox(msg, ok){
   document.getElementById("mNo").onclick = ()=> m.innerHTML="";
   document.getElementById("mYes").onclick = ()=>{ m.innerHTML=""; ok(); };
 }
-function clearTournament(){ S.g = null; S.r = {}; S.k = {}; S.d = {}; S.sw = []; S.m = freshTables(tables().length); }
+function askCups(name, ok){
+  const m = document.getElementById("modal");
+  m.innerHTML = `<div class="modal"><div class="box"><p><b>Ganó ${esc(name)}.</b><br>¿Cuántos vasos le quedaron en pie?</p>
+    <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:8px;margin-bottom:14px">${[1,2,3,4,5,6,7,8,9,10].map(n=>`<button class="btn" data-cups="${n}" style="padding:12px 0;font-size:17px">${n}</button>`).join("")}</div>
+    <div class="bar" style="margin:0;justify-content:flex-end"><button class="btn ghost" id="mNo">Cancelar</button></div></div></div>`;
+  document.getElementById("mNo").onclick = ()=> m.innerHTML="";
+  m.querySelectorAll("[data-cups]").forEach(b=>b.onclick = ()=>{ m.innerHTML=""; ok(+b.dataset.cups); });
+}
+function clearTournament(){ S.v = {}; S.g = null; S.r = {}; S.k = {}; S.d = {}; S.sw = []; S.m = freshTables(tables().length); }
 function doSorteo(){
   const ids = Array.from({length:S.n},(_,i)=>i);
   for (let i=ids.length-1;i>0;i--){ const j=Math.floor(Math.random()*(i+1)); [ids[i],ids[j]]=[ids[j],ids[i]]; }
@@ -911,7 +991,12 @@ document.getElementById("app").addEventListener("click", e=>{
     if (S.g) confirmBox("Cambiar el tipo de torneo borra el sorteo y los resultados actuales (los nombres y jugadores quedan). ¿Seguro?", doIt); else doIt();
     return; }
   const r = e.target.closest("[data-res]");
-  if (r){ const key = r.dataset.res, id = +r.dataset.id; if (S.r[key]===id) delete S.r[key]; else S.r[key]=id; save(); render(); return; }
+  if (r){
+    const key = r.dataset.res, id = +r.dataset.id;
+    if (S.r[key]===id){ delete S.r[key]; if (S.v) delete S.v[key]; save(); render(); return; }
+    if (useCD()){ askCups(tname(id), x=>{ S.r[key]=id; S.v = S.v||{}; S.v[key]=x; save(); render(); }); return; }
+    S.r[key]=id; save(); render(); return;
+  }
   const k = e.target.closest("[data-ko]");
   if (k){ const m = k.dataset.ko, id = +k.dataset.id; if (winner(m)===id) delete S.k[m]; else S.k[m]=id; save(); render(); }
 });
@@ -919,6 +1004,7 @@ document.getElementById("app").addEventListener("change", e=>{
   if (RO()) return;
   const t = e.target;
   if (t.dataset.name!==undefined){ S.names[+t.dataset.name] = t.value.slice(0,28); save(); render(); return; }
+  if (t.dataset.cdToggle!==undefined){ S.cd = t.checked; S.v = S.v || {}; save(); render(); return; }
   if (t.dataset.lfToggle!==undefined){ S.lf = t.checked; S.k = {}; save(); render(); return; }
   if (t.dataset.plToggle!==undefined){ S.pl = t.checked; save(); render(); return; }
   if (t.dataset.pl!==undefined){ S.players[+t.dataset.pl] = t.value.slice(0,70); save(); return; }
