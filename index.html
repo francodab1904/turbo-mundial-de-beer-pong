@@ -4,10 +4,10 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Turbo Mundial de Beer Pong</title>
-<meta name="description" content="Messi Cup · Champions League. 12 equipos, 3 grupos, cuartos, semis y final. Ganen o mueran.">
+<meta name="description" content="Messi Cup · Champions League. Grupos, tablas, mesas y llaves en vivo. Ganen o mueran.">
 <meta property="og:type" content="website">
 <meta property="og:title" content="🍺🏆 Turbo Mundial de Beer Pong">
-<meta property="og:description" content="Messi Cup · Champions League. 12 equipos, 3 grupos, cuartos, semis y final.">
+<meta property="og:description" content="Messi Cup · Champions League. Grupos, tablas, mesas y llaves en vivo.">
 <meta property="og:image" content="https://francodab1904.github.io/turbo-mundial-de-beer-pong/preview.png">
 <meta property="og:image:width" content="1200">
 <meta property="og:image:height" content="630">
@@ -114,6 +114,7 @@
 </header>
 <nav id="nav">
   <button data-v="grupos">📊 Grupos</button>
+  <button data-v="mesas">🍺 Mesas</button>
   <button data-v="llaves">🏆 Llaves</button>
   <button data-v="equipos">Equipos</button>
   <button data-v="reglas">Reglas</button>
@@ -125,10 +126,12 @@
 <script>
 // ===== Configuración de esta versión =====
 const LIVE = true;            // true: GitHub (en vivo, solo organizador carga) · false: Claude (todos usan su copia)
-const NTFY = "https://ntfy.sh/turbo-mundial-bp-v3-k4n8r2";
+const NTFY = "https://ntfy.sh/turbo-mundial-bp-v4-w7d3p9";
 const ADMIN_CODE = "admin-mc7k2q";
-const KEY = "tmbp-v3";
+const KEY = "tmbp-v4";
+const ADMIN_FLAG = "tmbp-v3-admin";   // mismo permiso de organizador que la versión anterior
 
+const MAX = 24, MIN = 4, MAXG = 6;
 const DEFAULT_TEAMS = [
   "Ivan / Brunito / Pedro Guastavino",
   "Tito / Francesca Giacomi / Luis",
@@ -143,25 +146,43 @@ const DEFAULT_TEAMS = [
   "Toto Costa / Justo Guastavino / Santi Mora",
   "Salva / Dogui / Cala"
 ];
-const N = 12, LETTERS = ["A","B","C"];
-const FECHAS = [[[0,1],[2,3]],[[0,2],[1,3]],[[0,3],[1,2]]];
-const VIEWS = ["grupos","llaves","equipos","reglas"];
+const LETTERS = ["A","B","C","D","E","F"];
+const FIX = {   // orden de partidos por cantidad de equipos en el grupo
+  3: [[[0,1]],[[0,2]],[[1,2]]],
+  4: [[[0,1],[2,3]],[[0,2],[1,3]],[[0,3],[1,2]]],
+  5: [[[0,1],[2,3]],[[0,2],[1,4]],[[0,3],[2,4]],[[0,4],[1,3]],[[1,2],[3,4]]]
+};
+const VIEWS = ["grupos","mesas","llaves","equipos","reglas"];
+const TABLE_NAMES = ["Mesa 1 · Ping pong","Mesa 2","Mesa 3","Mesa 4"];
+
+// ===== formato automático según la cantidad de equipos =====
+function formatFor(n){
+  const G = n <= 5 ? 1 : Math.round(n/4);
+  const base = Math.floor(n/G), extra = n % G;
+  const sizes = Array.from({length:G}, (_,i)=> base + (i < extra ? 1 : 0));
+  let K = 1; while (K < 2*G) K *= 2;           // la menor potencia de 2 que entra a los 2 primeros de cada grupo
+  if (K > 3*G) K /= 2;                         // si haría falta más que los terceros, se achica
+  const direct = Math.floor(K/G), extraQ = K % G; // pasan directo los primeros "direct" de cada grupo; después los mejores del siguiente puesto
+  return { n, G, sizes, K, direct, extraQ };
+}
+const roundName = size => ({2:"Final",4:"Semis",8:"Cuartos",16:"Octavos"})[size] || ("Ronda de " + size);
 
 // ===== organizador =====
 let isAdmin = !LIVE;
 if (LIVE){
-  try { isAdmin = localStorage.getItem(KEY + "-admin") === "1"; } catch(e){}
+  try { isAdmin = localStorage.getItem(ADMIN_FLAG) === "1"; } catch(e){}
   const h = location.hash.slice(1);
-  if (h === ADMIN_CODE){ isAdmin = true; try{ localStorage.setItem(KEY + "-admin","1"); }catch(e){} try{ history.replaceState(null,"","#grupos"); }catch(e){} }
-  if (h === "salir"){ isAdmin = false; try{ localStorage.removeItem(KEY + "-admin"); }catch(e){} try{ history.replaceState(null,"","#grupos"); }catch(e){} }
+  if (h === ADMIN_CODE){ isAdmin = true; try{ localStorage.setItem(ADMIN_FLAG,"1"); }catch(e){} try{ history.replaceState(null,"","#grupos"); }catch(e){} }
+  if (h === "salir"){ isAdmin = false; try{ localStorage.removeItem(ADMIN_FLAG); }catch(e){} try{ history.replaceState(null,"","#grupos"); }catch(e){} }
 }
 const RO = () => !isAdmin;
 
 // ===== estado =====
-function randTb(){ return Array.from({length:N}, ()=>Math.random()); }
+function randTb(){ return Array.from({length:MAX}, ()=>Math.random()); }
+function freshTables(){ return [0,1,2,3].map(()=>({on:true, hold:false, match:null})); }
 function fresh(){
-  return { names: Array(N).fill(""), players: [...DEFAULT_TEAMS], gn: ["Grupo A","Grupo B","Grupo C"],
-           g: null, r: {}, k: {}, d: {}, tb: randTb() };
+  return { n: 12, names: Array(MAX).fill(""), players: Array.from({length:MAX},(_,i)=>DEFAULT_TEAMS[i]||""),
+           gn: LETTERS.map(l=>"Grupo "+l), g: null, r: {}, k: {}, d: {}, m: freshTables(), tb: randTb() };
 }
 let S = fresh();
 if (isAdmin){ try { const s = JSON.parse(localStorage.getItem(KEY)); if (s && s.players) S = Object.assign(fresh(), s); } catch(e){} }
@@ -169,33 +190,40 @@ let view = VIEWS.includes(location.hash.slice(1)) ? location.hash.slice(1) : "gr
 
 const esc = s => String(s).replace(/[&<>"]/g, c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
 const tname = id => (S.names[id]||"").trim() || ("Equipo " + (id+1));
-const okId = x => Number.isInteger(x) && x>=0 && x<N;
+const okId = x => Number.isInteger(x) && x>=0 && x<S.n;
 const pkey = (a,b) => Math.min(a,b) + "-" + Math.max(a,b);
-const groupIds = gi => S.g ? S.g.slice(gi*4, gi*4+4) : [null,null,null,null];
+const F = () => formatFor(S.n);
+function groupStart(gi){ const s = F().sizes; let o = 0; for (let i=0;i<gi;i++) o += s[i]; return o; }
+const groupIds = gi => S.g ? S.g.slice(groupStart(gi), groupStart(gi) + F().sizes[gi]) : [];
+const groupOf = id => { if (!S.g) return -1; const p = S.g.indexOf(id), s = F().sizes; let o = 0; for (let i=0;i<s.length;i++){ if (p < o + s[i]) return i; o += s[i]; } return -1; };
+const fixtureOf = gi => FIX[F().sizes[gi]];
 
 // ===== tablas =====
 function standings(gi){
-  const ids = groupIds(gi);
+  const ids = groupIds(gi), fx = fixtureOf(gi);
   const rows = ids.map(id=>({id, gi, pj:0, pg:0, pp:0, pts:0}));
   const by = Object.fromEntries(rows.map(r=>[r.id,r]));
-  let played = 0;
-  for (const f of FECHAS) for (const [i,j] of f){
+  let played = 0, total = 0;
+  for (const f of fx) for (const [i,j] of f){
+    total++;
     const a = ids[i], b = ids[j], w = S.r[pkey(a,b)];
     if (w!==a && w!==b) continue;
     played++;
     const W = by[w], L = by[w===a?b:a];
     W.pj++; L.pj++; W.pg++; W.pts++; L.pp++;
   }
-  const rk = rank(rows, "g"+gi, true);
-  return { rows: rk.rows, pend: rk.pend, done: played===6 };
+  const rk = rank(rows, "g"+gi, true, false);
+  return { rows: rk.rows, pend: rk.pend, done: played===total };
 }
-// Desempate: 1) puntos · 2) si empatan 2, el partido entre ellos · 3) si empatan 3 o más, tiro de desempate en la mesa
+// Desempate en el grupo: 1) puntos · 2) si empatan 2, partido entre ellos · 3) si empatan 3 o más, desempate en la mesa
+// Entre grupos distintos (mejores segundos/terceros): % de partidos ganados y, si empatan, sorteo
 function rank(rows, key, h2h, auto){
-  rows.sort((x,y)=> (y.pts-x.pts) || (S.tb[y.id]-S.tb[x.id]));
+  const val = r => auto ? (r.pj ? r.pts/r.pj : 0) : r.pts;
+  rows.sort((x,y)=> (val(y)-val(x)) || (S.tb[y.id]-S.tb[x.id]));
   const out = [], pend = [];
   let i = 0;
   while (i < rows.length){
-    let j = i; while (j < rows.length && rows[j].pts === rows[i].pts) j++;
+    let j = i; while (j < rows.length && val(rows[j]) === val(rows[i])) j++;
     let cl = rows.slice(i, j);
     if (cl.length === 2 && h2h){
       const w = S.r[pkey(cl[0].id, cl[1].id)];
@@ -209,85 +237,138 @@ function rank(rows, key, h2h, auto){
   }
   return { rows: out, pend };
 }
-const allDone = () => !!S.g && [0,1,2].every(gi=>standings(gi).done);
-function thirdsRank(){ return rank([0,1,2].map(gi=>standings(gi).rows[2]), "t", false, true); }   // terceros: si empatan, sorteo
-function thirds(){ return thirdsRank().rows; }
-const tiesReady = () => allDone() && [0,1,2].every(gi=>standings(gi).pend.length===0) && thirdsRank().pend.length===0;
+const allDone = () => !!S.g && Array.from({length:F().G},(_,gi)=>gi).every(gi=>standings(gi).done);
+const tiesReady = () => allDone() && Array.from({length:F().G},(_,gi)=>gi).every(gi=>standings(gi).pend.length===0);
+function tierRank(p){ return rank(Array.from({length:F().G},(_,gi)=>standings(gi).rows[p]).filter(Boolean), "t", false, true).rows; }
 
 // ===== llaves =====
-function qualified(){
+function bracketOrder(K){ let o = [1]; while (o.length < K){ const m = o.length*2+1; o = o.flatMap(s=>[s, m-s]); } return o; }
+function seeds(){
   if (!tiesReady()) return null;
-  const st = [0,1,2].map(gi=>standings(gi).rows);
-  const th = thirds(), best = th.slice(0,2), worst = th[2];
-  const bestG = best.map(r=>r.gi).sort().join("");
-  // tercero para el 1°A y para el 1°B, sin repetir grupo
-  let tA, tB;
-  if (bestG === "01"){ tA = best.find(r=>r.gi===1); tB = best.find(r=>r.gi===0); }
-  else if (bestG === "02"){ tA = best.find(r=>r.gi===2); tB = best.find(r=>r.gi===0); }
-  else { tA = best.find(r=>r.gi===1); tB = best.find(r=>r.gi===2); }
-  const plata = [worst, st[0][3], st[1][3], st[2][3]].sort((x,y)=> (y.pts-x.pts) || (S.tb[y.id]-S.tb[x.id]));
-  return {
-    q1:[st[0][0].id, tA.id], q2:[st[1][1].id, st[2][1].id], q3:[st[1][0].id, tB.id], q4:[st[2][0].id, st[0][1].id],
-    plata: plata.map(r=>r.id), thirdsLbl: {[tA.id]:"3° "+LETTERS[tA.gi], [tB.id]:"3° "+LETTERS[tB.gi]}
-  };
+  const f = F(), list = [];
+  for (let p=0; p<f.direct; p++) list.push(...tierRank(p));
+  if (f.extraQ) list.push(...tierRank(f.direct).slice(0, f.extraQ));
+  return list.slice(0, f.K);
 }
-const QLBL = { q1:["1° A","Mejor 3° (B o C)"], q2:["2° B","2° C"], q3:["1° B","Mejor 3° (A o C)"], q4:["1° C","2° A"] };
-const KO = {
-  q1:{lbl:"Cuartos 1"}, q2:{lbl:"Cuartos 2"}, q3:{lbl:"Cuartos 3"}, q4:{lbl:"Cuartos 4"},
-  s1:{lbl:"Semi 1", from:["q1","q2"]}, s2:{lbl:"Semi 2", from:["q3","q4"]}, f:{lbl:"Final de Oro", from:["s1","s2"]}
-};
-function sides(m){
-  const Q = qualified();
-  if (m[0]==="q"){
-    if (!Q) return QLBL[m].map(l=>({id:null,label:l}));
-    return Q[m].map(id=>({id}));
+function firstRound(){
+  const sd = seeds(); if (!sd) return null;
+  const K = F().K, ord = bracketOrder(K), pairs = [];
+  for (let i=0;i<K;i+=2) pairs.push([sd[ord[i]-1], sd[ord[i+1]-1]]);
+  // evitar que se crucen dos del mismo grupo en la primera ronda: se intercambia el rival con otro cruce
+  for (let a=0;a<pairs.length;a++){
+    if (groupOf(pairs[a][0].id) !== groupOf(pairs[a][1].id)) continue;
+    for (let b=0;b<pairs.length;b++){
+      if (b===a) continue;
+      const ok1 = groupOf(pairs[a][0].id) !== groupOf(pairs[b][1].id), ok2 = groupOf(pairs[b][0].id) !== groupOf(pairs[a][1].id);
+      if (ok1 && ok2){ const t = pairs[a][1]; pairs[a][1] = pairs[b][1]; pairs[b][1] = t; break; }
+    }
   }
-  return KO[m].from.map(x=>({id:winner(x), label:"Ganador " + KO[x].lbl}));
+  return pairs.map(p=>p.map(r=>r.id));
+}
+function rounds(){ const K = F().K, R = []; for (let s=K; s>=2; s/=2) R.push(s); return R; }
+const koKey = (ri,i) => "r"+ri+"m"+i;
+function koList(){ const out = []; rounds().forEach((s,ri)=>{ for (let i=0;i<s/2;i++) out.push(koKey(ri,i)); }); return out; }
+const finalKey = () => koKey(rounds().length-1, 0);
+function koLabel(m){
+  const [ri,i] = m.slice(1).split("m").map(Number), s = rounds()[ri];
+  return s===2 ? "Final" : roundName(s) + " " + (i+1);
+}
+function sides(m){
+  const [ri,i] = m.slice(1).split("m").map(Number);
+  if (ri===0){
+    const fr = firstRound();
+    if (!fr) return [{id:null,label:"Se define en grupos"},{id:null,label:"Se define en grupos"}];
+    return fr[i].map(id=>({id}));
+  }
+  return [koKey(ri-1,2*i), koKey(ri-1,2*i+1)].map(x=>({id:winner(x), label:"Ganador " + koLabel(x)}));
 }
 function winner(m){
   const w = S.k[m];
   if (!okId(w)) return null;
   return sides(m).some(s=>s.id===w) ? w : null;
 }
+function seedLabel(id){
+  const g = groupOf(id); if (g<0) return "";
+  const pos = standings(g).rows.findIndex(r=>r.id===id);
+  return (pos+1) + "° " + LETTERS[g];
+}
 
-// ===== render =====
+// ===== mesas =====
+function allMatches(){
+  const out = [];
+  if (!S.g) return out;
+  const f = F(), maxF = Math.max(...f.sizes.map(s=>FIX[s].length));
+  for (let fi=0; fi<maxF; fi++) for (let gi=0; gi<f.G; gi++){
+    const fx = fixtureOf(gi); if (fi >= fx.length) continue;
+    const ids = groupIds(gi);
+    for (const [i,j] of fx[fi]) out.push({ id:"g:"+pkey(ids[i],ids[j]), teams:[ids[i],ids[j]], lbl: S.gn[gi] + " · Fecha " + (fi+1), kind:"g", key:pkey(ids[i],ids[j]) });
+  }
+  for (const m of koList()){
+    const sd = sides(m);
+    if (sd.every(x=>x.id!==null)) out.push({ id:"k:"+m, teams:sd.map(x=>x.id), lbl: koLabel(m), kind:"k", key:m });
+  }
+  return out;
+}
+const matchDone = mt => mt.kind==="g" ? (S.r[mt.key]===mt.teams[0] || S.r[mt.key]===mt.teams[1]) : winner(mt.key)!==null;
+function tables(){ if (!Array.isArray(S.m) || S.m.length!==4) S.m = freshTables(); return S.m; }
+function fillTables(){
+  const T = tables(), all = allMatches(), byId = Object.fromEntries(all.map(x=>[x.id,x]));
+  T.forEach(t=>{ const mt = byId[t.match]; if (!t.on || !mt || matchDone(mt)) t.match = null; });
+  for (const t of T){
+    if (!t.on || t.match || t.hold) continue;
+    const busy = new Set(T.flatMap(x=>x.match && byId[x.match] ? byId[x.match].teams : []));
+    const onTable = new Set(T.map(x=>x.match).filter(Boolean));
+    const next = all.find(mt => !matchDone(mt) && !onTable.has(mt.id) && !mt.teams.some(id=>busy.has(id)));
+    if (next) t.match = next.id;
+  }
+}
+
+// ===== vistas =====
 function render(){
   document.querySelectorAll("#nav button[data-v]").forEach(b=>b.classList.toggle("on", b.dataset.v===view));
   const app = document.getElementById("app");
-  app.innerHTML = view==="llaves" ? vLlaves() : view==="equipos" ? vEquipos() : view==="reglas" ? vReglas() : vGrupos();
+  app.innerHTML = view==="mesas" ? vMesas() : view==="llaves" ? vLlaves() : view==="equipos" ? vEquipos() : view==="reglas" ? vReglas() : vGrupos();
 }
-
+function formatText(f){
+  const gs = f.G===1 ? `1 grupo de ${f.sizes[0]}` : `${f.G} grupos (${f.sizes.join(", ")} equipos)`;
+  const pj = [...new Set(f.sizes.map(s=>s-1))].join(" o ");
+  const ord = ["primeros","segundos","terceros","cuartos"];
+  let pasan = f.direct===1 ? "el 1° de cada grupo" : `los ${f.direct} primeros de cada grupo`;
+  if (f.extraQ) pasan += ` y ${f.extraQ===1 ? "el mejor" : "los " + f.extraQ + " mejores"} ${ord[f.direct]}`;
+  const ronda = f.K===2 ? "la final" : roundName(f.K).toLowerCase();
+  return { gs, pj, pasan, ronda };
+}
 function pendBox(p, show){
   if (!show) return "";
   const n = p.ids.length;
   if (RO()) return `<div class="card" style="border-color:var(--amber);margin:4px 0 12px;padding:10px 12px"><b style="color:var(--amber)">🎯 Desempate en la mesa</b><div class="hint">Empate de ${n} equipos con ${p.pts} ${p.pts===1?"punto":"puntos"}. Un vaso por equipo, tira un representante de cada uno y el primero que mete queda arriba.</div></div>`;
   return `<div class="card" style="border-color:var(--amber);margin:4px 0 12px;padding:10px 12px">
     <b style="color:var(--amber)">🎯 Desempate en la mesa</b>
-    <div class="hint" style="margin:2px 0 8px">Empate de ${n} equipos con ${p.pts} ${p.pts===1?"punto":"puntos"}. Un vaso por equipo, tira un representante de cada uno: el primero que mete queda arriba. Tocá en orden quién quedó 1°, 2°${n>2?", 3°":""}.</div>
+    <div class="hint" style="margin:2px 0 8px">Empate de ${n} equipos con ${p.pts} ${p.pts===1?"punto":"puntos"}. Un vaso por equipo, tira un representante de cada uno: el primero que mete queda arriba. Tocá en orden quién quedó 1°, 2°, 3°…</div>
     <div style="display:flex;gap:6px;flex-wrap:wrap">${p.ids.map(id=>{ const k = p.partial.indexOf(id);
       return `<div class="tm click ${k>=0?"win":""}" data-dk="${p.dk}" data-id="${id}">${k>=0?(k+1)+"° · ":""}${esc(tname(id))}</div>`; }).join("")}
       ${p.partial.length ? `<button class="btn ghost" data-dkr="${p.dk}" style="padding:8px 12px">Borrar</button>` : ""}</div>
   </div>`;
 }
 function vGrupos(){
-  if (!S.g) return `<div class="empty">Todavía no se armaron los grupos.<br><br>${RO() ? "Cuando se sorteen, aparecen acá solos. 🍺" : `<button class="btn" data-act="sorteo">🎲 Sortear grupos</button><br><br><span class="hint">O armalos a mano en la pestaña Equipos.</span>`}</div>`;
-  const thr = allDone() ? thirdsRank() : null, th = thr ? thr.rows : null;
+  if (!S.g) return `<div class="empty">Todavía no se armaron los grupos.<br><br>${RO() ? "Cuando se sorteen, aparecen acá solos. 🍺" : `<button class="btn" data-act="sorteo">🎲 Sortear grupos</button><br><br><span class="hint">Elegí cuántos equipos son en la pestaña Equipos.</span>`}</div>`;
+  const f = F(), ord = ["primeros","segundos","terceros","cuartos"];
+  const zone = p => p < f.direct ? "z-oro" : (p===f.direct && f.extraQ) ? "z-ter" : "z-plata";
+  const tier = f.extraQ && allDone() ? tierRank(f.direct) : null;
+  const tierLive = f.extraQ ? tierRank(f.direct) : null;
   return `
-  ${RO() ? "" : `<div class="bar"><span class="hint">Tocá al equipo que ganó cada partido (1 punto). Tocá de nuevo para deshacer. Si al terminar un grupo empatan 3 equipos, te aparece el desempate para cargar.</span></div>`}
+  ${RO() ? "" : `<div class="bar"><span class="hint">Tocá al equipo que ganó cada partido (1 punto). Tocá de nuevo para deshacer. Si al terminar un grupo empatan 3 o más, te aparece el desempate para cargar.</span></div>`}
   <div class="groups">
-  ${[0,1,2].map(gi=>{
+  ${Array.from({length:f.G},(_,gi)=>{
     const ids = groupIds(gi), st = standings(gi);
     return `<div class="card">
       <div class="gtitle">${esc(S.gn[gi])} <small>${st.done ? "✅ terminado" : "en juego"}</small></div>
       <table class="tbl"><colgroup><col style="width:30px"><col><col style="width:34px"><col style="width:34px"><col style="width:34px"><col style="width:40px"></colgroup>
         <tr><th>#</th><th class="tn">Equipo</th><th>PJ</th><th>PG</th><th>PP</th><th>Pts</th></tr>
-        ${st.rows.map((r,i)=>{
-          const z = i<2 ? "z-oro" : i===2 ? "z-ter" : "z-plata";
-          return `<tr class="${z}"><td class="pos">${i+1}</td><td class="tn" title="${esc(S.players[r.id])}">${esc(tname(r.id))}</td><td>${r.pj}</td><td>${r.pg}</td><td>${r.pp}</td><td class="pts">${r.pts}</td></tr>`;
-        }).join("")}
+        ${st.rows.map((r,i)=>`<tr class="${zone(i)}"><td class="pos">${i+1}</td><td class="tn" title="${esc(S.players[r.id])}">${esc(tname(r.id))}</td><td>${r.pj}</td><td>${r.pg}</td><td>${r.pp}</td><td class="pts">${r.pts}</td></tr>`).join("")}
       </table>
       ${st.pend.map(p=>pendBox(p, st.done)).join("")}
-      ${FECHAS.map((f,fi)=>`<div class="fecha">Fecha ${fi+1}</div>` + f.map(([i,j])=>{
+      ${fixtureOf(gi).map((fx,fi)=>`<div class="fecha">Fecha ${fi+1}</div>` + fx.map(([i,j])=>{
         const a = ids[i], b = ids[j], w = S.r[pkey(a,b)];
         const cl = id => (w===a||w===b) ? (w===id ? "win" : "lose") : "";
         const clk = id => RO() ? "" : `data-res="${pkey(a,b)}" data-id="${id}"`;
@@ -299,91 +380,136 @@ function vGrupos(){
       }).join("")).join("")}
     </div>`;
   }).join("")}
-    <div class="card">
-      <div class="gtitle">Mejores terceros <small>${tiesReady() ? "✅ definido" : th ? "falta desempate" : "se define al final"}</small></div>
-      <table class="tbl"><colgroup><col style="width:30px"><col><col style="width:44px"><col style="width:40px"></colgroup>
-        <tr><th>#</th><th class="tn">Equipo</th><th>Grupo</th><th>Pts</th></tr>
-        ${(th || thirdsRank().rows).map((r,i)=>`
-          <tr class="${i<2?"z-oro":"z-plata"}"><td class="pos">${i+1}</td><td class="tn">${esc(tname(r.id))}</td><td>${LETTERS[r.gi]}</td><td class="pts">${r.pts}</td></tr>`).join("")}
+  ${f.extraQ ? `<div class="card">
+      <div class="gtitle">Mejores ${ord[f.direct]} <small>${tier ? "✅ definido" : "se define al final"}</small></div>
+      <table class="tbl"><colgroup><col style="width:30px"><col><col style="width:44px"><col style="width:40px"><col style="width:50px"></colgroup>
+        <tr><th>#</th><th class="tn">Equipo</th><th>Grupo</th><th>Pts</th><th>% PG</th></tr>
+        ${tierLive.map((r,i)=>`<tr class="${i<f.extraQ?"z-oro":"z-plata"}"><td class="pos">${i+1}</td><td class="tn">${esc(tname(r.id))}</td><td>${LETTERS[r.gi]}</td><td class="pts">${r.pts}</td><td>${r.pj?Math.round(100*r.pts/r.pj):0}%</td></tr>`).join("")}
       </table>
-      ${thr ? thr.pend.map(p=>pendBox(p, true)).join("") : ""}
-      <div class="hint">Los 2 mejores terceros pasan a cuartos. El peor tercero queda afuera. Si empatan en puntos, se define por sorteo 🎲.</div>
-    </div>
+      <div class="hint">Pasan ${f.extraQ===1?"el mejor":"los "+f.extraQ+" mejores"}. Se comparan por % de partidos ganados (por si los grupos son de distinto tamaño). Si empatan, sorteo.</div>
+    </div>` : ""}
   </div>
   <div class="legend">
-    <span><i style="background:var(--green)"></i>Pasan a cuartos</span>
-    <span><i style="background:var(--amber)"></i>Depende de la tabla de terceros</span>
+    <span><i style="background:var(--green)"></i>Pasan a ${f.K===2?"la final":roundName(f.K).toLowerCase()}</span>
+    ${f.extraQ ? `<span><i style="background:var(--amber)"></i>Depende de la tabla de mejores ${ord[f.direct]}</span>` : ""}
     <span><i style="background:var(--silver)"></i>Quedan afuera</span>
     <span>PJ jugados · PG ganados · PP perdidos · Pts 1 por victoria</span>
   </div>`;
 }
-
+function teamBtns(mt){
+  const done = matchDone(mt), w = mt.kind==="g" ? S.r[mt.key] : winner(mt.key);
+  const attr = id => RO() ? "" : (mt.kind==="g" ? `data-res="${mt.key}" data-id="${id}"` : `data-ko="${mt.key}" data-id="${id}"`);
+  const cl = id => done ? (w===id ? "win" : "lose") : "";
+  const [a,b] = mt.teams;
+  return `<div class="match"><div class="tm ${cl(a)} ${RO()?"":"click"}" ${attr(a)} title="${esc(S.players[a])}">${w===a?"✓ ":""}${esc(tname(a))}</div><div class="vs">VS</div>
+    <div class="tm r ${cl(b)} ${RO()?"":"click"}" ${attr(b)} title="${esc(S.players[b])}">${esc(tname(b))}${w===b?" ✓":""}</div></div>`;
+}
+function vMesas(){
+  if (!S.g) return `<div class="empty">Las mesas se llenan solas cuando se sorteen los grupos.</div>`;
+  const T = tables(), all = allMatches(), byId = Object.fromEntries(all.map(x=>[x.id,x]));
+  const onTable = new Set(T.map(x=>x.match).filter(Boolean));
+  const busy = new Set(T.flatMap(x=>x.match && byId[x.match] ? byId[x.match].teams : []));
+  const pending = all.filter(mt=>!matchDone(mt));
+  const queue = pending.filter(mt=>!onTable.has(mt.id));
+  return `
+  ${RO() ? "" : `<div class="bar"><span class="hint">Cuando cargás un ganador, la mesa se llena sola con el próximo partido (salteando equipos que están jugando en otra mesa). Podés cambiar el partido de cualquier mesa o tachar la mesa 4 si no hay.</span></div>`}
+  <div class="groups">
+  ${T.map((t,i)=>{
+    const mt = byId[t.match];
+    if (!t.on) return RO() ? "" : `<div class="card" style="opacity:.6"><div class="gtitle"><s>${TABLE_NAMES[i]}</s> <small>tachada</small></div>
+      <div class="bar" style="margin:8px 0 0"><button class="btn ghost" data-tbl-on="${i}">Habilitar mesa</button></div></div>`;
+    const opts = `<option value="">— Libre —</option>` + pending.map(x=>`<option value="${x.id}" ${x.id===t.match?"selected":""}>${esc(x.lbl)}: ${esc(tname(x.teams[0]))} vs ${esc(tname(x.teams[1]))}</option>`).join("");
+    return `<div class="card" style="${mt?"border-color:var(--orange)":""}">
+      <div class="gtitle">${TABLE_NAMES[i]} <small>${mt ? "🔴 jugando" : t.hold ? "⏸ en pausa" : "libre"}</small></div>
+      ${mt ? `<div class="fecha" style="margin-top:6px">${esc(mt.lbl)}</div>${teamBtns(mt)}` : `<div class="hint" style="margin:10px 0">${t.hold ? "En pausa: elegí un partido para seguir usando esta mesa." : pending.length ? "Esperando partido…" : "No quedan partidos."}</div>`}
+      ${RO() ? "" : `<div style="margin-top:10px"><select class="f" data-tbl="${i}">${opts}</select></div>
+        ${i===3 ? `<div class="bar" style="margin:10px 0 0"><button class="btn ghost" data-tbl-off="${i}">Tachar esta mesa</button></div>` : ""}`}
+    </div>`;
+  }).join("")}
+  </div>
+  <div class="card" style="margin-top:16px">
+    <div class="gtitle">Próximos partidos <small>${queue.length} en espera</small></div>
+    ${queue.length ? queue.slice(0,10).map((mt,n)=>{
+      const wait = mt.teams.filter(id=>busy.has(id));
+      return `<div style="display:flex;justify-content:space-between;gap:10px;padding:9px 0;border-top:1px solid var(--line);font-size:14px">
+        <span><b style="color:var(--orange)">${n+1}.</b> ${esc(tname(mt.teams[0]))} vs ${esc(tname(mt.teams[1]))}</span>
+        <span class="hint" style="text-align:right">${esc(mt.lbl)}${wait.length ? ` · espera a ${esc(wait.map(tname).join(" y "))}` : ""}</span></div>`;
+    }).join("") : `<div class="hint">No hay partidos en espera.</div>`}
+  </div>`;
+}
 function tie(m){
-  const sd = sides(m), w = winner(m), ready = sd.every(s=>s.id!==null), Q = qualified();
-  return `<div class="tie"><div class="lbl">${KO[m].lbl}</div>
+  const sd = sides(m), w = winner(m), ready = sd.every(s=>s.id!==null), first = m.startsWith("r0m");
+  return `<div class="tie"><div class="lbl">${koLabel(m)}</div>
     ${sd.map(s=>{
       if (s.id===null) return `<div class="slot tbd">${esc(s.label)}</div>`;
       const cls = w===null ? "" : (w===s.id ? "win" : "lose");
       const clk = ready && !RO() ? `data-ko="${m}" data-id="${s.id}"` : "";
-      const tag = w===s.id ? "PASA ✓" : (Q && Q.thirdsLbl[s.id] && m[0]==="q" ? Q.thirdsLbl[s.id] : "");
-      return `<div class="slot ${cls} ${clk?"click":""}" ${clk} title="${esc(S.players[s.id])}"><span>${esc(tname(s.id))}</span><span class="tag">${tag}</span></div>`;
+      const tag = w===s.id ? "PASA ✓" : (first ? seedLabel(s.id) : "");
+      return `<div class="slot ${cls} ${clk?"click":""}" ${clk} title="${esc(S.players[s.id])}"><span>${esc(tname(s.id))}</span><span class="tag" style="${w===s.id?"":"color:var(--muted)"}">${tag}</span></div>`;
     }).join("")}</div>`;
 }
-function champ(m, pl){
-  const c = winner(m), icon = pl ? "🥈" : "🏆";
-  return c===null ? `<div class="champ ${pl?"pl":""}"><div class="t">${icon}</div><div class="p">A definir</div></div>`
-    : `<div class="champ ${pl?"pl":""}"><div class="t">${icon}</div><div class="n">${esc(tname(c))}</div><div class="p">${esc(S.players[c])}</div></div>`;
-}
 function vLlaves(){
+  const R = rounds();
   const col = (h, ms) => `<div class="col"><h3>${h}</h3><div class="ties">${ms.map(tie).join("")}</div></div>`;
+  const c = winner(finalKey());
+  const champ = c===null ? `<div class="champ"><div class="t">🏆</div><div class="p">A definir</div></div>`
+    : `<div class="champ"><div class="t">🏆</div><div class="n">${esc(tname(c))}</div><div class="p">${esc(S.players[c])}</div></div>`;
   return `
-  ${RO() ? "" : `<div class="bar"><span class="hint">Las llaves se completan solas cuando terminan los 3 grupos. Tocá al que ganó y pasa; tocá de nuevo para deshacer.</span></div>`}
-  ${allDone() && !tiesReady() ? `<div class="card" style="border-color:var(--amber);margin-bottom:14px">🎯 Falta cargar un desempate en la pestaña Grupos para armar los cuartos.</div>` : ""}
+  ${RO() ? "" : `<div class="bar"><span class="hint">Las llaves se completan solas cuando terminan los grupos (el mejor clasificado juega contra el peor, y se evita que se crucen dos del mismo grupo). Tocá al que ganó y pasa; tocá de nuevo para deshacer.</span></div>`}
+  ${allDone() && !tiesReady() ? `<div class="card" style="border-color:var(--amber);margin-bottom:14px">🎯 Falta cargar un desempate en la pestaña Grupos para armar las llaves.</div>` : ""}
   <div class="sect oro">🏆 Eliminación</div>
-  <div class="bracket">
-    ${col("Cuartos",["q1","q2","q3","q4"])}${col("Semis",["s1","s2"])}${col("Final",["f"])}
-    <div class="col"><h3>Campeón</h3><div class="ties">${champ("f")}</div></div>
+  <div class="bracket" style="grid-template-columns:repeat(${R.length+1},minmax(185px,1fr))">
+    ${R.map((s,ri)=>col(s===2?"Final":roundName(s), Array.from({length:s/2},(_,i)=>koKey(ri,i)))).join("")}
+    <div class="col"><h3>Campeón</h3><div class="ties">${champ}</div></div>
   </div>
   ${RO() ? "" : `<div class="bar" style="margin-top:28px"><button class="btn ghost" data-act="reset">Reiniciar torneo</button></div>`}`;
 }
-
 function vEquipos(){
-  const dis = RO() ? "disabled" : "";
-  const teamOpts = sel => Array.from({length:N},(_,id)=>`<option value="${id}" ${id===sel?"selected":""}>${esc(tname(id))}</option>`).join("");
+  const dis = RO() ? "disabled" : "", f = F(), t = formatText(f);
+  const teamOpts = sel => Array.from({length:S.n},(_,id)=>`<option value="${id}" ${id===sel?"selected":""}>${esc(tname(id))}</option>`).join("");
   return `
+  <div class="card" style="margin-bottom:18px;border-color:var(--orange)">
+    <div class="gtitle">Cantidad de equipos</div>
+    ${RO() ? "" : `<div class="bar" style="margin:10px 0">
+      <button class="btn ghost" data-act="nminus" style="font-size:20px;padding:6px 16px">−</button>
+      <span style="font-family:Anton,sans-serif;font-size:36px;min-width:50px;text-align:center">${S.n}</span>
+      <button class="btn ghost" data-act="nplus" style="font-size:20px;padding:6px 16px">+</button>
+      <span class="hint">de ${MIN} a ${MAX}</span></div>`}
+    <div style="font-size:15px;line-height:1.6">${RO() ? `<b>${S.n} equipos</b> · ` : ""}${t.gs}, todos contra todos (${t.pj} partidos cada uno). Pasan ${t.pasan} a ${t.ronda}.</div>
+  </div>
   ${RO() ? "" : `<div class="bar">
     <button class="btn" data-act="sorteo">🎲 ${S.g ? "Re-sortear grupos" : "Sortear grupos"}</button>
     <span class="hint">Podés sortear o elegir a mano qué equipo va en cada lugar. Si elegís uno que ya estaba en otro lugar, se intercambian.</span></div>`}
   ${S.g ? `<div class="teams" style="margin-bottom:22px">
-    ${[0,1,2].map(gi=>`<div class="card">
+    ${Array.from({length:f.G},(_,gi)=>`<div class="card">
       <input class="f big" data-gn="${gi}" value="${esc(S.gn[gi])}" maxlength="24" ${dis}>
       ${groupIds(gi).map((id,i)=>`<div class="row"><div class="num">${LETTERS[gi]}${i+1}</div>
-        <select class="f" data-slot="${gi*4+i}" ${dis}>${teamOpts(id)}</select></div>`).join("")}
+        <select class="f" data-slot="${groupStart(gi)+i}" ${dis}>${teamOpts(id)}</select></div>`).join("")}
     </div>`).join("")}
   </div>` : ""}
   <div class="teams">
-    ${Array.from({length:N},(_,id)=>`<div class="card">
+    ${Array.from({length:S.n},(_,id)=>`<div class="card">
       <div class="num" style="padding:0;color:var(--orange);font-weight:800;font-size:12px;letter-spacing:2px">EQUIPO ${id+1}</div>
       <input class="f big" style="margin:8px 0 6px" data-name="${id}" placeholder="Nombre del equipo" value="${esc(S.names[id])}" maxlength="28" ${dis}>
-      ${RO() ? `<div class="players">${esc(S.players[id])}</div>` : `<input class="f" data-pl="${id}" value="${esc(S.players[id])}" maxlength="70">`}
+      ${RO() ? `<div class="players">${esc(S.players[id])}</div>` : `<input class="f" data-pl="${id}" placeholder="Jugadores" value="${esc(S.players[id])}" maxlength="70">`}
     </div>`).join("")}
   </div>`;
 }
-
 function vReglas(){
+  const f = F(), t = formatText(f), ord = ["primeros","segundos","terceros","cuartos"];
   return `<div class="rules">
     <div class="card"><h4>Formato</h4>
-      <p>• 12 equipos en 3 grupos de 4. Todos contra todos en el grupo: <b>3 partidos cada uno</b>.</p>
-      <p>• Pasan a <span class="y">cuartos</span> los 2 primeros de cada grupo y los 2 mejores terceros. Después semis y final.</p>
+      <p>• ${S.n} equipos en ${t.gs}. Todos contra todos en el grupo: <b>${t.pj} partidos cada uno</b>.</p>
+      <p>• Pasan ${t.pasan} a <span class="y">${t.ronda}</span>.${f.K>2 ? " Después eliminación directa hasta la final." : ""}</p>
     </div>
     <div class="card" style="grid-column:1/-1;border-color:var(--orange)"><h4>Cómo se clasifica</h4>
       <p>Partido ganado = <b>1 punto</b> · Partido perdido = <b>0 puntos</b>. Si dos o más equipos terminan igualados, se desempata en este orden:</p>
       <div class="steps">
         <div><span>1</span><p><b>Puntos.</b> Queda arriba el que tiene más puntos.</p></div>
         <div><span>2</span><p><b>Partido entre ellos.</b> Si empatan 2 equipos, queda arriba el que le ganó al otro en el grupo.</p></div>
-        <div><span>3</span><p><b>Desempate en la mesa.</b> Si empatan 3 equipos (cada uno le ganó a otro), se pone <span class="y">un vaso por equipo</span> y tira <span class="y">un representante de cada equipo</span>, por turnos. <b>El primero que mete, queda arriba.</b> Los que quedan vuelven a tirar para definir el resto.</p></div>
+        <div><span>3</span><p><b>Desempate en la mesa.</b> Si empatan 3 o más equipos, se pone <span class="y">un vaso por equipo</span> y tira <span class="y">un representante de cada equipo</span>, por turnos. <b>El primero que mete, queda arriba.</b> Los que quedan vuelven a tirar para definir el resto.</p></div>
       </div>
-      <p style="margin-top:6px">• <b>Mejores terceros:</b> pasan a cuartos los 2 terceros con más puntos. Si empatan, se define por <span class="y">sorteo</span>.</p>
+      ${f.extraQ ? `<p style="margin-top:6px">• <b>Mejores ${ord[f.direct]}:</b> se comparan por % de partidos ganados. Si empatan, se define por <span class="y">sorteo</span>.</p>` : ""}
     </div>
     <div class="card"><h4>Bebidas y equipos</h4>
       <p>• Se juega con 2 cervezas con alcohol por equipo.</p>
@@ -412,27 +538,35 @@ let lastT = 0, liveState = "", pubTimer = null;
 const hhmm = t => new Date(t).toLocaleTimeString("es-AR",{hour:"2-digit",minute:"2-digit"});
 function save(){
   if (!isAdmin) return;
+  fillTables();
   try { localStorage.setItem(KEY, JSON.stringify(S)); } catch(e){}
   if (LIVE){ clearTimeout(pubTimer); pubTimer = setTimeout(publish, 400); }
 }
-function pack(){ return JSON.stringify({v:3, t:Date.now(), n:S.names, p:S.players, gn:S.gn, g:S.g, r:S.r, k:S.k, d:S.d, tb:S.tb}); }
+function pack(){
+  const n = S.n;
+  return JSON.stringify({v:4, t:Date.now(), n, nm:S.names.slice(0,n), p:S.players.slice(0,n), gn:S.gn.slice(0,formatFor(n).G), g:S.g, r:S.r, k:S.k, d:S.d, m:S.m, tb:S.tb.slice(0,n)});
+}
 function unpack(str){
   let d; try { d = JSON.parse(str); } catch(e){ return null; }
-  if (!d || d.v!==3 || typeof d.t!=="number") return null;
+  if (!d || d.v!==4 || typeof d.t!=="number" || !Number.isInteger(d.n) || d.n<MIN || d.n>MAX) return null;
+  const n = d.n, G = formatFor(n).G, id = x => Number.isInteger(x) && x>=0 && x<n;
   const strArr = (a,len,max) => Array.isArray(a) && a.length===len && a.every(x=>typeof x==="string" && x.length<=max);
-  if (!strArr(d.n,N,28) || !strArr(d.p,N,70) || !strArr(d.gn,3,24)) return null;
-  if (d.g!==null && !(Array.isArray(d.g) && d.g.length===N && d.g.every(okId) && new Set(d.g).size===N)) return null;
-  if (!Array.isArray(d.tb) || d.tb.length!==N || !d.tb.every(x=>typeof x==="number")) return null;
-  const r = {}, k = {};
-  if (d.r && typeof d.r==="object") for (const [key,val] of Object.entries(d.r)) if (/^\d{1,2}-\d{1,2}$/.test(key) && okId(val)) r[key]=val;
-  if (d.k && typeof d.k==="object") for (const [key,val] of Object.entries(d.k)) if (KO[key] && okId(val)) k[key]=val;
-  const dd = {};
-  if (d.d && typeof d.d==="object") for (const [key,val] of Object.entries(d.d)) if (/^(g[0-2]|t):\d$/.test(key) && Array.isArray(val) && val.length<=4 && val.every(okId) && new Set(val).size===val.length) dd[key]=val;
-  return { t:d.t, names:d.n, players:d.p, gn:d.gn, g:d.g, r, k, d:dd, tb:d.tb };
+  if (!strArr(d.nm,n,28) || !strArr(d.p,n,70) || !strArr(d.gn,G,24)) return null;
+  if (d.g!==null && !(Array.isArray(d.g) && d.g.length===n && d.g.every(id) && new Set(d.g).size===n)) return null;
+  if (!Array.isArray(d.tb) || d.tb.length!==n || !d.tb.every(x=>typeof x==="number")) return null;
+  const r = {}, k = {}, dd = {};
+  if (d.r && typeof d.r==="object") for (const [key,val] of Object.entries(d.r)) if (/^\d{1,2}-\d{1,2}$/.test(key) && id(val)) r[key]=val;
+  if (d.k && typeof d.k==="object") for (const [key,val] of Object.entries(d.k)) if (/^r[0-4]m\d{1,2}$/.test(key) && id(val)) k[key]=val;
+  if (d.d && typeof d.d==="object") for (const [key,val] of Object.entries(d.d)) if (/^g[0-5]:\d$/.test(key) && Array.isArray(val) && val.length<=5 && val.every(id) && new Set(val).size===val.length) dd[key]=val;
+  let m = freshTables();
+  if (Array.isArray(d.m) && d.m.length===4) m = d.m.map(t=>({ on: !!(t&&t.on), hold: !!(t&&t.hold), match: (t && typeof t.match==="string" && /^(g:\d{1,2}-\d{1,2}|k:r[0-4]m\d{1,2})$/.test(t.match)) ? t.match : null }));
+  const pad = (a, fill) => a.concat(Array(MAX - a.length).fill(fill));
+  const gn = d.gn.concat(LETTERS.slice(G).map(l=>"Grupo "+l));
+  return { t:d.t, n, names:pad(d.nm,""), players:pad(d.p,""), gn, g:d.g, r, k, d:dd, m, tb:pad(d.tb,0) };
 }
 function apply(d){
   lastT = d.t;
-  S = { names:d.names, players:d.players, gn:d.gn, g:d.g, r:d.r, k:d.k, d:d.d, tb:d.tb };
+  S = { n:d.n, names:d.names, players:d.players, gn:d.gn, g:d.g, r:d.r, k:d.k, d:d.d, m:d.m, tb:d.tb };
   liveState = "Última actualización: " + hhmm(d.t);
   banner(); render();
 }
@@ -483,11 +617,17 @@ function confirmBox(msg, ok){
   document.getElementById("mNo").onclick = ()=> m.innerHTML="";
   document.getElementById("mYes").onclick = ()=>{ m.innerHTML=""; ok(); };
 }
+function clearTournament(){ S.g = null; S.r = {}; S.k = {}; S.d = {}; S.m = tables().map(t=>({on:t.on, hold:false, match:null})); }
 function doSorteo(){
-  const ids = Array.from({length:N},(_,i)=>i);
-  for (let i=N-1;i>0;i--){ const j=Math.floor(Math.random()*(i+1)); [ids[i],ids[j]]=[ids[j],ids[i]]; }
-  S.g = ids; S.r = {}; S.k = {}; S.d = {}; S.tb = randTb();
+  const ids = Array.from({length:S.n},(_,i)=>i);
+  for (let i=ids.length-1;i>0;i--){ const j=Math.floor(Math.random()*(i+1)); [ids[i],ids[j]]=[ids[j],ids[i]]; }
+  clearTournament(); S.g = ids; S.tb = randTb();
   save(); go("grupos");
+}
+function setN(n){
+  n = Math.max(MIN, Math.min(MAX, n)); if (n===S.n) return;
+  const doIt = ()=>{ S.n = n; clearTournament(); save(); render(); };
+  if (S.g) confirmBox(`Cambiar a ${n} equipos borra los grupos y resultados actuales (los nombres y jugadores quedan). ¿Seguro?`, doIt); else doIt();
 }
 function go(v){ view = v; try{ history.replaceState(null,"","#"+v); }catch(e){} render(); window.scrollTo(0,0); }
 const hasResults = () => Object.keys(S.r).length || Object.keys(S.k).length;
@@ -499,10 +639,15 @@ document.getElementById("app").addEventListener("click", e=>{
   if (RO()) return;
   const a = e.target.closest("[data-act]");
   if (a){
-    if (a.dataset.act==="sorteo"){ if (S.g && hasResults()) confirmBox("Re-sortear borra todos los resultados. ¿Seguro?", doSorteo); else doSorteo(); }
-    if (a.dataset.act==="reset") confirmBox("Esto borra grupos y resultados (nombres y jugadores quedan). ¿Seguro?", ()=>{ S.g=null; S.r={}; S.k={}; S.d={}; save(); go("equipos"); });
+    const act = a.dataset.act;
+    if (act==="sorteo"){ if (S.g && hasResults()) confirmBox("Re-sortear borra todos los resultados. ¿Seguro?", doSorteo); else doSorteo(); }
+    if (act==="reset") confirmBox("Esto borra grupos y resultados (nombres y jugadores quedan). ¿Seguro?", ()=>{ clearTournament(); save(); go("equipos"); });
+    if (act==="nplus") setN(S.n+1);
+    if (act==="nminus") setN(S.n-1);
     return;
   }
+  const ton = e.target.closest("[data-tbl-on]"), toff = e.target.closest("[data-tbl-off]");
+  if (ton || toff){ const t = tables()[+(ton||toff).dataset[ton?"tblOn":"tblOff"]]; t.on = !!ton; if (!ton) t.match = null; save(); render(); return; }
   const dk = e.target.closest("[data-dk]");
   if (dk){ const key = dk.dataset.dk, id = +dk.dataset.id; S.d = S.d || {}; const cur = (S.d[key]||[]).slice(); if (!cur.includes(id)) cur.push(id); S.d[key] = cur; save(); render(); return; }
   const dr = e.target.closest("[data-dkr]");
@@ -518,6 +663,13 @@ document.getElementById("app").addEventListener("change", e=>{
   if (t.dataset.name!==undefined){ S.names[+t.dataset.name] = t.value.slice(0,28); save(); render(); return; }
   if (t.dataset.pl!==undefined){ S.players[+t.dataset.pl] = t.value.slice(0,70); save(); return; }
   if (t.dataset.gn!==undefined){ S.gn[+t.dataset.gn] = t.value.slice(0,24) || ("Grupo " + LETTERS[+t.dataset.gn]); save(); render(); return; }
+  if (t.dataset.tbl!==undefined){
+    const T = tables(), i = +t.dataset.tbl, val = t.value || null;
+    const other = val ? T.findIndex((x,j)=>j!==i && x.match===val) : -1;
+    if (other!==-1) T[other].match = T[i].match;   // si ya estaba en otra mesa, se intercambian
+    T[i].match = val; T[i].hold = !val;            // "Libre" a mano: queda en pausa hasta que elijas un partido
+    save(); render(); return;
+  }
   if (t.dataset.slot!==undefined){
     const slot = +t.dataset.slot, id = +t.value, other = S.g.indexOf(id);
     if (other!==-1 && other!==slot){ S.g[other] = S.g[slot]; }
@@ -529,7 +681,7 @@ window.addEventListener("hashchange", ()=>{ const h = location.hash.slice(1); if
 if (LIVE && isAdmin){
   const b = document.createElement("button"); b.className = "adminbtn"; b.textContent = "🔑 Organizador · Salir";
   b.onclick = ()=> confirmBox("¿Salir del modo organizador en este celular? Vas a ver la página como la gente. Para volver, abrí de nuevo tu link secreto.", ()=>{
-    try{ localStorage.removeItem(KEY + "-admin"); }catch(e){} location.hash = "grupos"; location.reload(); });
+    try{ localStorage.removeItem(ADMIN_FLAG); }catch(e){} location.hash = "grupos"; location.reload(); });
   document.getElementById("nav").appendChild(b);
 }
 render(); banner();
