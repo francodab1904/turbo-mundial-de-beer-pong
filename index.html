@@ -845,6 +845,7 @@ function vReglas(){
   return `<div class="rules">
     <div class="card"><h4>Formato</h4>
       <p>• <b>${MODES[mode()].lbl}</b> con ${S.n} equipos.</p>
+      <p>• Cada partido se juega <b>6 contra 6 vasos</b>.</p>
       <p>• ${t.summary}</p>
       ${t.plata ? `<p>• <b>Copa de Plata:</b> los que quedan afuera juegan su propia eliminación directa, así todos juegan más.</p>` : ""}
     </div>
@@ -1045,7 +1046,7 @@ function confirmBox(msg, ok){
 function askCups(name, ok){
   const m = document.getElementById("modal");
   m.innerHTML = `<div class="modal"><div class="box"><p><b>Ganó ${esc(name)}.</b><br>¿Cuántos vasos le quedaron en pie?</p>
-    <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:8px;margin-bottom:14px">${[1,2,3,4,5,6,7,8,9,10].map(n=>`<button class="btn" data-cups="${n}" style="padding:12px 0;font-size:17px">${n}</button>`).join("")}</div>
+    <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:14px">${[1,2,3,4,5,6].map(n=>`<button class="btn" data-cups="${n}" style="padding:12px 0;font-size:17px">${n}</button>`).join("")}</div>
     <div class="bar" style="margin:0;justify-content:flex-end"><button class="btn ghost" id="mNo">Cancelar</button></div></div></div>`;
   document.getElementById("mNo").onclick = ()=> m.innerHTML="";
   m.querySelectorAll("[data-cups]").forEach(b=>b.onclick = ()=>{ m.innerHTML=""; ok(+b.dataset.cups); });
