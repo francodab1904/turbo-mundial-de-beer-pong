@@ -131,7 +131,7 @@ const ADMIN_CODE = "admin-mc7k2q";
 const KEY = "tmbp-v6";
 const ADMIN_FLAG = "tmbp-v3-admin";   // mismo permiso de organizador que la versión anterior
 
-const MAX = 24, MIN = 4, MAXG = 6;
+const MAX = 32, MIN = 4, MAXG = 8;
 const DEFAULT_TEAMS = [
   "Ivan / Brunito / Pedro Guastavino",
   "Tito / Francesca Giacomi / Luis",
@@ -146,7 +146,7 @@ const DEFAULT_TEAMS = [
   "Toto Costa / Justo Guastavino / Santi Mora",
   "Salva / Dogui / Cala"
 ];
-const LETTERS = ["A","B","C","D","E","F"];
+const LETTERS = ["A","B","C","D","E","F","G","H"];
 const FIX = {   // orden de partidos por cantidad de equipos en el grupo
   3: [[[0,1]],[[0,2]],[[1,2]]],
   4: [[[0,1],[2,3]],[[0,2],[1,3]],[[0,3],[1,2]]],
@@ -172,7 +172,7 @@ const MODES = {
   gsolo:  { lbl:"Fase de grupos (sin eliminatorias)", desc:"Grupos de 3 a 5, todos contra todos. Solo los ganadores de grupo siguen: final (2 grupos), triangular (3) o semis (4)." },
   liga:   { lbl:"Liga (varias jornadas)", desc:"Una sola tabla: todos contra todos, fecha por fecha. Gana el que suma más (con final opcional entre los 2 primeros)." }
 };
-const roundName = size => ({2:"Final",4:"Semis",8:"Cuartos",16:"Octavos"})[size] || ("Ronda de " + size);
+const roundName = size => ({2:"Final",4:"Semis",8:"Cuartos",16:"Octavos",32:"16avos"})[size] || ("Ronda de " + size);
 
 // ===== organizador =====
 let isAdmin = !LIVE;
@@ -182,7 +182,8 @@ if (LIVE){
   if (h === ADMIN_CODE){ isAdmin = true; try{ localStorage.setItem(ADMIN_FLAG,"1"); }catch(e){} try{ history.replaceState(null,"","#grupos"); }catch(e){} }
   if (h === "salir"){ isAdmin = false; try{ localStorage.removeItem(ADMIN_FLAG); }catch(e){} try{ history.replaceState(null,"","#grupos"); }catch(e){} }
 }
-const RO = () => !isAdmin;
+let syncing = false;      // el organizador no puede tocar nada mientras se baja lo último publicado
+const RO = () => !isAdmin || syncing;
 
 // ===== estado =====
 function randTb(){ return Array.from({length:MAX}, ()=>Math.random()); }
@@ -429,9 +430,20 @@ const koKey = (pre,ri,i) => pre+ri+"m"+i;
 const parseKey = m => { const [ri,i] = m.slice(1).split("m").map(Number); return {pre:m[0], ri, i}; };
 function koList(pre){ const out = []; rounds(pre).forEach((s,ri)=>{ for (let i=0;i<s/2;i++) out.push(koKey(pre,ri,i)); }); return out; }
 const finalKey = pre => koKey(pre, rounds(pre).length-1, 0);
+// Si sobran pocos equipos para el cuadro, la primera ronda es una "Previa" (pocos partidos, el resto pasa directo).
+// Si sobran muchos, se juega el cuadro grande con algunos pases directos.
+function bracketTeams(pre){ return pre==="p" ? plataCount() : (mode()==="elim" ? S.n : F().K); }
+function isPrevia(pre){
+  const R = rounds(pre); if (!R.length) return false;
+  const P = R[0], T = bracketTeams(pre);
+  return T < P && (T - P/2) <= P/4;
+}
+function roundTitle(pre, ri){ const s = rounds(pre)[ri]; return ri===0 && isPrevia(pre) ? "Previa" : (s===2 ? "Final" : roundName(s)); }
 function koLabel(m){
   const {pre, ri, i} = parseKey(m), s = rounds(pre)[ri];
-  return (pre==="p" ? "Plata · " : "") + (s===2 ? "Final" : roundName(s) + " " + (i+1));
+  let n = i + 1;
+  if (ri===0 && isPrevia(pre)){ const fr = firstRound(pre); if (fr) n = fr.slice(0, i+1).filter(p=>p[0]!==null && p[1]!==null).length; }
+  return (pre==="p" ? "Plata · " : "") + (s===2 ? "Final" : roundTitle(pre, ri) + " " + n);
 }
 function sides(m){
   const {pre, ri, i} = parseKey(m);
@@ -518,8 +530,11 @@ function formatText(f){
   const plata = !S.pl || E < 2 ? "" : `Los otros ${E} juegan la Copa de Plata.`;
   const total = `En total son ${totalMatches()} partidos.`;
   if (m==="elim"){
-    const byes = f.K - S.n;
-    return { summary: `Cuadro de eliminación directa (${roundName(f.K).toLowerCase()}).${byes ? ` Como no da justo, ${byes} ${byes===1?"equipo pasa":"equipos pasan"} directo a la segunda ronda (por sorteo).` : ""} ${S.pl && E>=2 ? `Los ${E} que pierden su primer partido juegan la Copa de Plata.` : ""} ${total}`, plata };
+    const byes = f.K - S.n, games = S.n - f.K/2;
+    const how = !byes ? `Cuadro de eliminación directa desde ${roundName(f.K).toLowerCase()}.`
+      : isPrevia("r") ? `Se juega una previa de ${games} ${games===1?"partido":"partidos"} (${2*games} equipos sorteados); los otros ${byes} pasan directo a ${roundName(f.K/2).toLowerCase()}.`
+      : `Cuadro de ${roundName(f.K).toLowerCase()}; como no da justo, ${byes} ${byes===1?"equipo pasa":"equipos pasan"} directo a ${roundName(f.K/2).toLowerCase()} (por sorteo).`;
+    return { summary: `${how} ${S.pl && E>=2 ? `Los ${E} que pierden ${isPrevia("r") ? "en la previa" : "su primer partido"} juegan la Copa de Plata.` : ""} ${total}`, plata };
   }
   if (m==="liga"){
     return { summary: `Liga: todos contra todos en ${S.n % 2 ? S.n : S.n-1} fechas (${S.n-1} partidos cada uno).${S.n % 2 ? " En cada fecha un equipo descansa." : ""} Gana el que suma más puntos${S.lf ? ", y al final juegan una final el 1° y el 2°" : ""}. ${total}`, plata:"" };
@@ -701,7 +716,11 @@ function cupBracket(pre){
   const champ = c===null ? `<div class="champ ${pl?"pl":""}"><div class="t">${icon}</div><div class="p">A definir</div></div>`
     : `<div class="champ ${pl?"pl":""}"><div class="t">${icon}</div><div class="n">${esc(tname(c))}</div><div class="p">${esc(S.players[c])}</div></div>`;
   return `<div class="bracket ${pl?"plata":""}" style="grid-template-columns:repeat(${R.length+1},minmax(185px,1fr))">
-    ${R.map((s,ri)=>col(s===2?"Final":roundName(s), Array.from({length:s/2},(_,i)=>koKey(pre,ri,i)))).join("")}
+    ${R.map((s,ri)=>{
+      let ms = Array.from({length:s/2},(_,i)=>koKey(pre,ri,i));
+      if (ri===0 && isPrevia(pre)){ const fr = firstRound(pre); if (fr) ms = ms.filter((_,i)=>fr[i][0]!==null && fr[i][1]!==null); }
+      return col(roundTitle(pre, ri), ms);
+    }).join("")}
     <div class="col"><h3>Campeón</h3><div class="ties">${champ}</div></div>
   </div>`;
 }
@@ -747,7 +766,7 @@ function vLlaves(){
   <div class="sect oro">🏆 Copa de Oro</div>
   ${cupBracket("r")}
   ${P ? `<div class="sect pl" style="margin-top:28px">🥈 Copa de Plata</div>
-    <div class="hint" style="margin-bottom:10px">La juegan los ${E} equipos que ${md==="elim" ? "perdieron su primer partido" : "quedaron afuera en los grupos"}.${P>E ? ` ${P-E===1 ? "El" : "Los " + (P-E)} ${md==="elim" ? (P-E===1?"primero en perder":"primeros en perder") : (P-E===1?"mejor ubicado":"mejores ubicados")} ${P-E===1?"pasa":"pasan"} directo a la segunda ronda.` : ""}</div>
+    <div class="hint" style="margin-bottom:10px">La juegan los ${E} equipos que ${md==="elim" ? (isPrevia("r") ? "perdieron en la previa" : "perdieron su primer partido") : "quedaron afuera en los grupos"}.${P>E ? ` ${P-E===1 ? "El" : "Los " + (P-E)} ${md==="elim" ? (P-E===1?"primero en perder":"primeros en perder") : (P-E===1?"mejor ubicado":"mejores ubicados")} ${P-E===1?"pasa":"pasan"} directo a la segunda ronda.` : ""}</div>
     ${cupBracket("p")}` : ""}
   ${RO() ? "" : `<div class="bar" style="margin-top:28px"><button class="btn ghost" data-act="reset">Reiniciar torneo</button></div>`}`;
 }
@@ -777,6 +796,10 @@ function vEquipos(){
     ${RO() || plataCount() < 2 ? "" : `<label style="display:flex;gap:10px;align-items:center;margin-top:12px;font-weight:700;cursor:pointer">
       <input type="checkbox" data-pl-toggle ${S.pl?"checked":""} style="width:20px;height:20px;accent-color:var(--orange)"> Jugar Copa de Plata con los que quedan afuera</label>`}
   </div>
+  ${RO() ? "" : `<div class="bar" style="margin-bottom:6px">
+    <button class="btn ghost" data-act="backup">💾 Copiar respaldo</button>
+    <button class="btn ghost" data-act="restore">📥 Pegar respaldo</button>
+    <span class="hint">Por si cambiás de celular o se corta todo.</span></div>`}
   ${RO() ? "" : `<div class="bar">
     <button class="btn" data-act="sorteo">🎲 ${S.g ? "Re-sortear" : "Sortear"} ${hasGroups() ? "grupos" : md==="liga" ? "fixture" : "cuadro"}</button>
     <span class="hint">${hasGroups() ? "Podés sortear o elegir a mano qué equipo va en cada lugar. Si elegís uno que ya estaba en otro lugar, se intercambian." : "El sorteo define el orden de los partidos."}</span></div>`}
@@ -852,15 +875,19 @@ function vReglas(){
 let lastT = 0, liveState = "", pubTimer = null;
 const hhmm = t => new Date(t).toLocaleTimeString("es-AR",{hour:"2-digit",minute:"2-digit"});
 function save(){
-  if (!isAdmin) return;
+  if (!isAdmin || syncing) return;
+  S.ts = Date.now();
   ensureSwiss();
   fillTables();
   try { localStorage.setItem(KEY, JSON.stringify(S)); } catch(e){}
   if (LIVE){ clearTimeout(pubTimer); pubTimer = setTimeout(publish, 400); }
 }
-function pack(){
+function pack(st){
+  const S0 = S; if (st) S = st;
+  try {
   const n = S.n;
-  return JSON.stringify({v:4, t:Date.now(), n, nm:S.names.slice(0,n), p:S.players.slice(0,n), gn:S.gn.slice(0,formatFor(n).G), g:S.g, r:S.r, k:S.k, d:S.d, m:S.m, pl:S.pl, mo:mode(), lf:!!S.lf, cd:!!S.cd, cv:S.v||{}, sw:S.sw||[], sr:S.sr||3, tb:S.tb.slice(0,n)});
+  return JSON.stringify({v:4, t:Date.now(), n, nm:S.names.slice(0,n), p:S.players.slice(0,n), gn:S.gn.slice(0,formatFor(n).G), g:S.g, r:S.r, k:S.k, d:S.d, m:(S.m||[]).map(t=>({hold:!!t.hold, match:t.match||null})), pl:!!S.pl, mo:mode(), lf:!!S.lf, cd:!!S.cd, cv:S.v||{}, sw:S.sw||[], sr:S.sr||3, tb:S.tb.slice(0,n)});
+  } finally { S = S0; }
 }
 function unpack(str){
   let d; try { d = JSON.parse(str); } catch(e){ return null; }
@@ -872,10 +899,10 @@ function unpack(str){
   if (!Array.isArray(d.tb) || d.tb.length!==n || !d.tb.every(x=>typeof x==="number")) return null;
   const r = {}, k = {}, dd = {};
   if (d.r && typeof d.r==="object") for (const [key,val] of Object.entries(d.r)) if (/^\d{1,2}-\d{1,2}$/.test(key) && id(val)) r[key]=val;
-  if (d.k && typeof d.k==="object") for (const [key,val] of Object.entries(d.k)) if (/^[rp][0-4]m\d{1,2}$/.test(key) && id(val)) k[key]=val;
-  if (d.d && typeof d.d==="object") for (const [key,val] of Object.entries(d.d)) if (/^(g[0-5]|L|T):\d{1,2}$/.test(key) && Array.isArray(val) && val.length<=MAX && val.every(id) && new Set(val).size===val.length) dd[key]=val;
+  if (d.k && typeof d.k==="object") for (const [key,val] of Object.entries(d.k)) if (/^[rp][0-5]m\d{1,2}$/.test(key) && id(val)) k[key]=val;
+  if (d.d && typeof d.d==="object") for (const [key,val] of Object.entries(d.d)) if (/^(g[0-7]|L|T):\d{1,2}$/.test(key) && Array.isArray(val) && val.length<=MAX && val.every(id) && new Set(val).size===val.length) dd[key]=val;
   let m = freshTables();
-  if (Array.isArray(d.m) && d.m.length>=1 && d.m.length<=MAXT) m = d.m.map(t=>({ hold: !!(t&&t.hold), match: (t && typeof t.match==="string" && /^(g:\d{1,2}-\d{1,2}|k:[rp][0-4]m\d{1,2})$/.test(t.match)) ? t.match : null }));
+  if (Array.isArray(d.m) && d.m.length>=1 && d.m.length<=MAXT) m = d.m.map(t=>({ hold: !!(t&&t.hold), match: (t && typeof t.match==="string" && /^(g:\d{1,2}-\d{1,2}|k:[rp][0-5]m\d{1,2})$/.test(t.match)) ? t.match : null }));
   const pad = (a, fill) => a.concat(Array(MAX - a.length).fill(fill));
   const gn = d.gn.concat(LETTERS.slice(G).map(l=>"Grupo "+l));
   const mo = MODES[d.mo] ? d.mo : "grupos";
@@ -884,6 +911,83 @@ function unpack(str){
   let sw = [];
   if (Array.isArray(d.sw) && d.sw.length<=8) sw = d.sw.filter(rd=>rd && Array.isArray(rd.p) && rd.p.every(pr=>Array.isArray(pr) && pr.length===2 && pr.every(id))).map(rd=>({p:rd.p, b: id(rd.b) ? rd.b : null}));
   return { t:d.t, n, names:pad(d.nm,""), players:pad(d.p,""), gn, g:d.g, r, k, d:dd, m, pl: d.pl!==false, mo, lf: !!d.lf, cd: !!d.cd, v: vv, sw, sr: Number.isInteger(d.sr) ? d.sr : 3, tb:pad(d.tb,0) };
+}
+function stateFrom(d){
+  return { n:d.n, names:d.names, players:d.players, gn:d.gn, g:d.g, r:d.r, k:d.k, d:d.d, m:d.m, pl:d.pl, mode:d.mo, lf:d.lf, cd:d.cd, v:d.v, sw:d.sw, sr:d.sr, tb:d.tb, ts:d.t };
+}
+const sig = st => { const o = JSON.parse(pack.call(null, st)); delete o.t; return JSON.stringify(o); };
+function adopt(d){            // el organizador toma un estado (publicado o de respaldo) como propio
+  S = stateFrom(d);
+  try { localStorage.setItem(KEY, JSON.stringify(S)); } catch(e){}
+  render(); banner();
+}
+async function fetchLatest(){
+  const ctrl = typeof AbortController!=="undefined" ? new AbortController() : null;
+  const timer = setTimeout(()=>{ if (ctrl) ctrl.abort(); }, 8000);
+  try {
+    const txt = await (await fetch(NTFY + "/json?poll=1&since=12h", ctrl ? {signal: ctrl.signal} : {})).text();
+    let best = null;
+    for (const line of txt.split("\n")){
+      if (!line.trim()) continue;
+      let o; try { o = JSON.parse(line); } catch(e){ continue; }
+      if (o.event!=="message") continue;
+      const d = unpack(o.message);
+      if (d && (!best || d.t > best.t)) best = d;
+    }
+    return { ok: true, best };
+  } catch(e){ return { ok: false, best: null }; }
+  finally { clearTimeout(timer); }
+}
+async function adminSync(){
+  syncing = true; liveState = "⏳ Sincronizando con lo publicado…"; banner(); render();
+  const { ok, best } = await fetchLatest();
+  syncing = false;
+  if (!ok){ liveState = "⚠️ No se pudo revisar lo publicado. Si cambiaste de celular, esperá a tener señal antes de cargar."; banner(); render(); return; }
+  const localHas = !!S.g || Object.keys(S.r||{}).length > 0;
+  if (!best){ liveState = ""; banner(); render(); if (S.g) publish(); return; }
+  if (!localHas){ adopt(best); liveState = "✅ Recuperado lo publicado (" + hhmm(best.t) + ")"; banner(); return; }
+  if (sig(S) === sig(stateFrom(best))){ liveState = "✅ Al día"; banner(); render(); return; }
+  const lt = S.ts || 0;
+  const m = document.getElementById("modal");
+  m.innerHTML = `<div class="modal"><div class="box"><p><b>Este celular tiene un torneo distinto al publicado.</b><br><br>
+    Publicado (lo que ve la gente): ${hhmm(best.t)}<br>En este celular: ${lt ? hhmm(lt) : "sin hora"}<br><br>
+    ¿Con cuál te quedás? El otro se pierde.</p>
+    <div class="bar" style="margin:0;flex-direction:column;align-items:stretch">
+      <button class="btn" id="usePub">Usar lo publicado${best.t >= lt ? " (más nuevo)" : ""}</button>
+      <button class="btn ghost" id="useLocal">Usar lo de este celular${lt > best.t ? " (más nuevo)" : ""}</button></div></div></div>`;
+  document.getElementById("usePub").onclick = ()=>{ m.innerHTML=""; adopt(best); liveState = "✅ Recuperado lo publicado"; banner(); };
+  document.getElementById("useLocal").onclick = ()=>{ m.innerHTML=""; save(); render(); };
+}
+// ----- respaldo a mano -----
+function backupText(){ return "TMBP:" + btoa(unescape(encodeURIComponent(pack()))); }
+function readBackup(txt){
+  txt = (txt||"").trim(); if (!txt.startsWith("TMBP:")) return null;
+  try { return unpack(decodeURIComponent(escape(atob(txt.slice(5))))); } catch(e){ return null; }
+}
+function backupBox(){
+  const m = document.getElementById("modal");
+  const txt = backupText();
+  m.innerHTML = `<div class="modal"><div class="box" style="max-width:520px"><p><b>Respaldo del torneo</b><br><span class="hint">Copiá este texto y mandátelo por WhatsApp. Para recuperar el torneo en otro celular, usá "Pegar respaldo".</span></p>
+    <textarea class="f" id="bkTxt" readonly style="height:110px;font-size:11px;word-break:break-all">${esc(txt)}</textarea>
+    <div class="bar" style="margin:12px 0 0;justify-content:flex-end"><span class="hint" id="bkMsg"></span><button class="btn ghost" id="mNo">Cerrar</button><button class="btn" id="bkCopy">Copiar</button></div></div></div>`;
+  document.getElementById("mNo").onclick = ()=> m.innerHTML="";
+  document.getElementById("bkCopy").onclick = async ()=>{
+    const ta = document.getElementById("bkTxt"); ta.select();
+    try { await navigator.clipboard.writeText(txt); document.getElementById("bkMsg").textContent = "✅ Copiado"; }
+    catch(e){ document.getElementById("bkMsg").textContent = "Seleccioná el texto y copialo a mano"; }
+  };
+}
+function restoreBox(){
+  const m = document.getElementById("modal");
+  m.innerHTML = `<div class="modal"><div class="box" style="max-width:520px"><p><b>Pegar respaldo</b><br><span class="hint">Pegá el texto que empieza con TMBP:. Reemplaza el torneo de este celular${LIVE ? " y se publica para todos" : ""}.</span></p>
+    <textarea class="f" id="rsTxt" style="height:110px;font-size:11px" placeholder="TMBP:..."></textarea>
+    <div class="bar" style="margin:12px 0 0;justify-content:flex-end"><span class="hint" id="rsMsg" style="color:var(--red)"></span><button class="btn ghost" id="mNo">Cancelar</button><button class="btn" id="rsOk">Cargar</button></div></div></div>`;
+  document.getElementById("mNo").onclick = ()=> m.innerHTML="";
+  document.getElementById("rsOk").onclick = ()=>{
+    const d = readBackup(document.getElementById("rsTxt").value);
+    if (!d){ document.getElementById("rsMsg").textContent = "Ese texto no es un respaldo válido."; return; }
+    m.innerHTML = ""; adopt(d); save(); render();
+  };
 }
 function apply(d){
   lastT = d.t;
@@ -971,6 +1075,8 @@ document.getElementById("app").addEventListener("click", e=>{
     const act = a.dataset.act;
     if (act==="sorteo"){ if (S.g && hasResults()) confirmBox("Re-sortear borra todos los resultados. ¿Seguro?", doSorteo); else doSorteo(); }
     if (act==="reset") confirmBox("Esto borra grupos y resultados (nombres y jugadores quedan). ¿Seguro?", ()=>{ clearTournament(); save(); go("equipos"); });
+    if (act==="backup") backupBox();
+    if (act==="restore") restoreBox();
     if (act==="nplus") setN(S.n+1);
     if (act==="nminus") setN(S.n-1);
     if (act==="mplus" || act==="mminus"){
@@ -1031,7 +1137,7 @@ if (LIVE && isAdmin){
   document.getElementById("nav").appendChild(b);
 }
 render(); banner();
-if (LIVE){ if (isAdmin){ if (S.g) publish(); } else follow(); }
+if (LIVE){ if (isAdmin) adminSync(); else follow(); }
 </script>
 </body>
 </html>
